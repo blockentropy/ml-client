@@ -1,0 +1,8 @@
+[settings]
+host = 0.0.0.0
+port = 12345
+
+[llama70BchatGPTQ]
+string = llama70BchatGPTQ
+repo = /home/ed/Documents/huggingface/Llama-2-70B-chat-GPTQ
+
