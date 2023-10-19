@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, TextStreamer, TextIteratorStreamer
-from threading import Thread
+from threading import Thread, BoundedSemaphore
 from auto_gptq import exllama_set_max_input_length
 
 class CompletionRequest(BaseModel):
@@ -41,6 +41,10 @@ repo_id = config.get('llama70BchatGPTQ', 'repo')
 host = config.get('settings', 'host')
 port = config.getint('settings', 'port')
 
+# only allow one client at a time
+busy = False
+condition = asyncio.Condition()
+
 model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              device_map="auto",
                                              trust_remote_code=False,
@@ -57,28 +61,25 @@ print("*** Loaded.. now Inference...:")
 
 app = FastAPI(title="Llama70B")
 
-def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70'):
+#def model_generate(inputs, streamer, max_new_tokens):
+#    global busy
+#    busy = True
+#    model.generate(input_ids=inputs['input_ids'], streamer=streamer, max_new_tokens=max_new_tokens)
+#    busy = False
+
+
+async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70'):
     """Generator for each chunk received from OpenAI as response
     :return: generator object for streaming response from OpenAI
     """
-
-    req_headers = {
-        'Accept': 'text/event-stream',
-    }
-    req_body = {
-        'model': tempmodel,
-        'prompt': prompt,
-        'max_tokens': 400,
-        'temperature': 0,
-        'stream': True,
-    }
-
+    global busy
     inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
     generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens)
     thread = Thread(target=model.generate, kwargs=generation_kwargs)
     thread.start()
     generated_text = ""
     for new_text in streamer:
+        busy = True
         generated_text += new_text
         reason = None
         if new_text == "</s>":
@@ -102,6 +103,9 @@ def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llam
         yield f"data: {json_output}\n\n"  # SSE format
 
     yield 'data: [DONE]'
+    busy = False
+    async with condition:
+        condition.notify_all()
 
 def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70'):
     # Assume generated_text is the output text you want to return
@@ -145,20 +149,42 @@ def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = '
 
 @app.post('/v1/completions')
 async def main(request: CompletionRequest):
-    prompt = ""
-    if isinstance(request.prompt, list):
-        # handle list of strings
-        prompt = request.prompt[0]  # just grabbing the 0th index
-    else:
-        # handle single string
-        prompt = request.prompt
 
-    if request.stream:
-        return StreamingResponse(streaming_request(prompt, request.max_tokens), media_type="text/event-stream")
-    else:
-        response_data = non_streaming_request(prompt, request.max_tokens)
-        return response_data  # This will return a JSON response
+    global busy
+    async with condition:
+        while busy:
+            await condition.wait()
+        busy = True
 
+    try:
+        prompt = ""
+        if isinstance(request.prompt, list):
+            # handle list of strings
+            prompt = request.prompt[0]  # just grabbing the 0th index
+        else:
+            # handle single string
+            prompt = request.prompt
+
+        if request.stream:
+            response = StreamingResponse(streaming_request(prompt, request.max_tokens), media_type="text/event-stream")
+        else:
+            response_data = non_streaming_request(prompt, request.max_tokens)
+            response = response_data  # This will return a JSON response
+    
+    except Exception as e:
+        # Handle exception...
+        async with condition:
+            if request.stream == True:
+                busy = False
+                await condition.notify_all()
+
+    finally:
+        async with condition:
+            if request.stream != True:
+                busy = False
+                condition.notify_all()
+
+    return response
 
 if __name__ == "__main__":
     import uvicorn
