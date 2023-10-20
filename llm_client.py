@@ -182,9 +182,14 @@ async def main(request: CompletionRequest):
         async with condition:
             if request.stream != True:
                 busy = False
-                condition.notify_all()
+                await condition.notify_all()
 
     return response
+
+
+@app.get('/ping')
+async def get_status():
+    return {"ping": "pong"}
 
 if __name__ == "__main__":
     import uvicorn
