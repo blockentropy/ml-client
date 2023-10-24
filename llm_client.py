@@ -37,7 +37,7 @@ class CompletionRequest(BaseModel):
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-repo_id = config.get('llama70BchatGPTQ', 'repo')
+repo_id = config.get('Llama-2-70B-chat-GPTQ', 'repo')
 host = config.get('settings', 'host')
 port = config.getint('settings', 'port')
 
@@ -182,7 +182,7 @@ async def main(request: CompletionRequest):
         async with condition:
             if request.stream != True:
                 busy = False
-                await condition.notify_all()
+                condition.notify_all()
 
     return response
 
