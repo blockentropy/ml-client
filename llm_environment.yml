@@ -59,7 +59,6 @@ dependencies:
       - fastcore==1.5.29
       - filelock==3.12.4
       - filetype==1.2.0
-      - flash-attn==2.3.2
       - frozenlist==1.4.0
       - fs==2.4.16
       - fsspec==2023.6.0
