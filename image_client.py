@@ -83,7 +83,7 @@ def image_request(prompt: str, tempmodel: str = 'XL'):
         }
     return response_data
 
-@app.post('/v1/image/generations')
+@app.post('/v1/images/generations')
 async def main(request: CompletionRequest):
 
     response_data = None
