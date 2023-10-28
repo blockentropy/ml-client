@@ -110,6 +110,7 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
 def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70'):
     # Assume generated_text is the output text you want to return
     # and assume you have a way to calculate prompt_tokens and completion_tokens
+    prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
 
     pipe = pipeline(
         "text-generation",
@@ -123,8 +124,9 @@ def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = '
     )
     output = pipe(prompt, return_full_text=False)
     generated_text = output[0]['generated_text']
-    completion_tokens = max_tokens
-    prompt_tokens = max_tokens
+    full_tokens = len(tokenizer.encode(generated_text, add_special_tokens=False))
+    completion_tokens = full_tokens - prompt_tokens
+
 
     response_data = {
         "id": "cmpl-0",
@@ -142,7 +144,7 @@ def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = '
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens
+            "total_tokens": full_tokens
         }
     }
     return response_data
