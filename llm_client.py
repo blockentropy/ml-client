@@ -154,7 +154,8 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
     async with condition:
         condition.notify_all()
 
-def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70'):
+def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70', response_format: str = 'completion'):
+
     # Assume generated_text is the output text you want to return
     # and assume you have a way to calculate prompt_tokens and completion_tokens
     prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
@@ -174,26 +175,50 @@ def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = '
     full_tokens = len(tokenizer.encode(generated_text, add_special_tokens=False))
     completion_tokens = full_tokens - prompt_tokens
 
-
-    response_data = {
-        "id": "cmpl-0",
-        "object": "text_completion",
-        "created": int(time.time()),
-        "model": tempmodel,
-        "choices": [
-            {
-                "text": generated_text,
-                "index": 0,
-                "logprobs": None,
-                "finish_reason": "length"  # Assuming max length
+    # Prepare the response based on the format required
+    if response_format == 'completion':
+        response_data = {
+            "id": "cmpl-0",
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": tempmodel,
+            "choices": [
+                {
+                    "text": generated_text,
+                    "index": 0,
+                    "logprobs": None,
+                    "finish_reason": "length"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": full_tokens
             }
-        ],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": full_tokens
         }
-    }
+    elif response_format == 'chat_completion':
+        response_data = {
+            "id": "chatcmpl-0",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": tempmodel,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": generated_text,
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": full_tokens
+            }
+        }
+    else:
+        raise ValueError(f"Unsupported response_format: {response_format}")
+
     return response_data
 
 @app.post('/v1/completions')
@@ -262,7 +287,7 @@ async def mainchat(request: ChatCompletionRequest):
         if request.stream:
             response = StreamingResponse(streaming_request(prompt, request.max_tokens, response_format='chat_completion'), media_type="text/event-stream")
         else:
-            response_data = non_streaming_request(prompt, request.max_tokens)
+            response_data = non_streaming_request(prompt, request.max_tokens, response_format='chat_completion')
             response = response_data  # This will return a JSON response
     
     except Exception as e:
