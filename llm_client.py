@@ -182,7 +182,7 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
         yield f"data: {json_output}\n\n"  # SSE format
 
     if response_format == 'chat_completion':
-        yield f'data: {{"id":"{completion_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{tempmodel}","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}}\n\n'
+        yield f'data: {{"id":"{completion_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{tempmodel}","choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
     else:
         yield 'data: [DONE]'
 
