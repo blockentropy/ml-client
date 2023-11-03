@@ -33,11 +33,25 @@ class CompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[str]
+    stop: Optional[str] = None
+    max_tokens: Optional[int] = 100  # default value of 100
+    temperature: Optional[float] = 0.0  # default value of 0.0
+    stream: Optional[bool] = False  # default value of False
+    frequency_penalty: Optional[float] = 0.0  # default value of 0.0
+    log_probs: Optional[int] = 0  # default value of 0.0
+    n: Optional[int] = 1  # default value of 1, batch size
+    top_p: Optional[float] = 0.0  # default value of 0.0
+    user: Optional[str] = None
+
+
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-repo_id = config.get('Llama-2-70B-chat-GPTQ', 'repo')
+repo_id = config.get('Genz-70b-GPTQ', 'repo')
 host = config.get('settings', 'host')
 port = config.getint('settings', 'port')
 
@@ -103,6 +117,75 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
         yield f"data: {json_output}\n\n"  # SSE format
 
     yield 'data: [DONE]'
+    busy = False
+    async with condition:
+        condition.notify_all()
+
+
+async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70', response_format: str = 'completion'):
+    """Generator for each chunk received from OpenAI as response
+    :param response_format: 'text_completion' or 'chat_completion' to set the output format
+    :return: generator object for streaming response from OpenAI
+    """
+    global busy
+    inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
+    generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens)
+    thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    thread.start()
+    generated_text = ""
+    completion_id = f"chatcmpl-{int(time.time() * 1000)}"  # Unique ID for the completion
+
+    if response_format == 'chat_completion':
+        yield f'data: {{"id":"{completion_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{tempmodel}","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}}\n\n'
+
+    for new_text in streamer:
+        busy = True
+        generated_text += new_text
+        reason = None
+        if new_text == "</s>":
+            reason = "stop"
+            new_text = ''
+        
+        if response_format == 'chat_completion':
+            response_data = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": tempmodel,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": new_text
+                        },
+                        "finish_reason": reason
+                    }
+                ]
+            }
+        else:  # default to 'completion'
+            response_data = {
+                "id": completion_id,
+                "object": "text_completion",
+                "created": int(time.time()),
+                "model": tempmodel,
+                "choices": [
+                    {
+                        "index": 0,
+                        "text": new_text,
+                        "logprobs": None,
+                        "finish_reason": reason
+                    }
+                ]
+            }
+            
+        json_output = json.dumps(response_data)
+        yield f"data: {json_output}\n\n"  # SSE format
+
+    if response_format == 'chat_completion':
+        yield f'data: {{"id":"{completion_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{tempmodel}","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}}\n\n'
+    else:
+        yield 'data: [DONE]'
+
     busy = False
     async with condition:
         condition.notify_all()
@@ -187,6 +270,54 @@ async def main(request: CompletionRequest):
                 condition.notify_all()
 
     return response
+
+async def format_prompt(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message["role"] == "system":
+            formatted_prompt += f"{message['content']}\n\n"
+        elif message["role"] == "user":
+            formatted_prompt += f"### User:\n{message['content']}\n\n"
+        elif message["role"] == "assistant":
+            formatted_prompt += f"### Assistant:\n{message['content']}\n\n"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "### Assistant:\n"
+    return formatted_prompt
+
+@app.post('/v1/chat/completions')
+async def mainchat(request: ChatCompletionRequest):
+
+    global busy
+    async with condition:
+        while busy:
+            await condition.wait()
+        busy = True
+
+    try:
+        prompt = format_prompt(response["messages"])
+
+        if request.stream:
+            response = StreamingResponse(streaming_request(prompt, request.max_tokens), media_type="text/event-stream")
+        else:
+            response_data = non_streaming_request(prompt, request.max_tokens)
+            response = response_data  # This will return a JSON response
+    
+    except Exception as e:
+        # Handle exception...
+        async with condition:
+            if request.stream == True:
+                busy = False
+                await condition.notify_all()
+
+    finally:
+        async with condition:
+            if request.stream != True:
+                busy = False
+                condition.notify_all()
+
+    return response
+
+
 
 
 @app.get('/ping')
