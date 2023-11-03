@@ -33,9 +33,13 @@ class CompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
+class Message(BaseModel):
+    role: str
+    content: str
+
 class ChatCompletionRequest(BaseModel):
     model: str
-    messages: List[str]
+    messages: List[Message]
     stop: Optional[str] = None
     max_tokens: Optional[int] = 100  # default value of 100
     temperature: Optional[float] = 0.0  # default value of 0.0
@@ -81,47 +85,6 @@ app = FastAPI(title="Llama70B")
 #    model.generate(input_ids=inputs['input_ids'], streamer=streamer, max_new_tokens=max_new_tokens)
 #    busy = False
 
-
-async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70'):
-    """Generator for each chunk received from OpenAI as response
-    :return: generator object for streaming response from OpenAI
-    """
-    global busy
-    inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
-    generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens)
-    thread = Thread(target=model.generate, kwargs=generation_kwargs)
-    thread.start()
-    generated_text = ""
-    for new_text in streamer:
-        busy = True
-        generated_text += new_text
-        reason = None
-        if new_text == "</s>":
-            reason = "stop"
-            new_text = ''
-        response_data = {
-            "id": "cmpl-0",
-            "object": "text_completion",
-            "created": int(time.time()),
-            "model": "Llama70B",
-            "choices": [
-                {
-                    "index": 0,
-                    "text": new_text,  # Changed this line to match OpenAI's format
-                    "logprobs": None,
-                    "finish_reason": reason
-                }
-            ]
-        }
-        json_output = json.dumps(response_data)
-        yield f"data: {json_output}\n\n"  # SSE format
-
-    yield 'data: [DONE]'
-    busy = False
-    async with condition:
-        condition.notify_all()
-
-
 async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70', response_format: str = 'completion'):
     """Generator for each chunk received from OpenAI as response
     :param response_format: 'text_completion' or 'chat_completion' to set the output format
@@ -136,15 +99,16 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
     completion_id = f"chatcmpl-{int(time.time() * 1000)}"  # Unique ID for the completion
 
     if response_format == 'chat_completion':
-        yield f'data: {{"id":"{completion_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{tempmodel}","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}}\n\n'
+       yield f'data: {{"id":"{completion_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{tempmodel}","choices":[{{"index":0,"delta":{{"role":"assistant","content":""}},"finish_reason":"null"}}]}}\n\n'
 
     for new_text in streamer:
         busy = True
         generated_text += new_text
         reason = None
-        if new_text == "</s>":
+        if "</s>" in new_text:
             reason = "stop"
-            new_text = ''
+            # Strip the </s> from the new_text
+            new_text = new_text.replace("</s>", "")
         
         if response_format == 'chat_completion':
             response_data = {
@@ -274,12 +238,12 @@ async def main(request: CompletionRequest):
 async def format_prompt(messages):
     formatted_prompt = ""
     for message in messages:
-        if message["role"] == "system":
-            formatted_prompt += f"{message['content']}\n\n"
-        elif message["role"] == "user":
-            formatted_prompt += f"### User:\n{message['content']}\n\n"
-        elif message["role"] == "assistant":
-            formatted_prompt += f"### Assistant:\n{message['content']}\n\n"
+        if message.role == "system":
+            formatted_prompt += f"{message.content}\n\n"
+        elif message.role == "user":
+            formatted_prompt += f"### User:\n{message.content}\n\n"
+        elif message.role == "assistant":
+            formatted_prompt += f"### Assistant:\n{message.content}\n\n"
     # Add the final "### Assistant:\n" to prompt for the next response
     formatted_prompt += "### Assistant:\n"
     return formatted_prompt
@@ -294,10 +258,9 @@ async def mainchat(request: ChatCompletionRequest):
         busy = True
 
     try:
-        prompt = format_prompt(response["messages"])
-
+        prompt = await format_prompt(request.messages)
         if request.stream:
-            response = StreamingResponse(streaming_request(prompt, request.max_tokens), media_type="text/event-stream")
+            response = StreamingResponse(streaming_request(prompt, request.max_tokens, response_format='chat_completion'), media_type="text/event-stream")
         else:
             response_data = non_streaming_request(prompt, request.max_tokens)
             response = response_data  # This will return a JSON response
