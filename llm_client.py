@@ -4,6 +4,7 @@ import os
 import logging
 import time
 import configparser
+import tiktoken
 from typing import AsyncIterable, List, Generator, Union, Optional
 
 import requests
@@ -78,6 +79,47 @@ streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
 print("*** Loaded.. now Inference...:")
 
 app = FastAPI(title="Llama70B")
+
+##Use tiktoken for token counts
+async def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613"):
+    """Return the number of tokens used by a list of messages."""
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        print("Warning: model not found. Using cl100k_base encoding.")
+        encoding = tiktoken.get_encoding("cl100k_base")
+    if model in {
+        "gpt-3.5-turbo-0613",
+        "gpt-3.5-turbo-16k-0613",
+        "gpt-4-0314",
+        "gpt-4-32k-0314",
+        "gpt-4-0613",
+        "gpt-4-32k-0613",
+        }:
+        tokens_per_message = 3
+        tokens_per_name = 1
+    elif model == "gpt-3.5-turbo-0301":
+        tokens_per_message = 4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
+        tokens_per_name = -1  # if there's a name, the role is omitted
+    else:
+        raise NotImplementedError(
+            f"""num_tokens_from_messages() is not implemented for model {model}. See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens."""
+        )
+    num_tokens = 0
+    for message in messages:
+        num_tokens += tokens_per_message
+        print(message)
+        # Assuming message is a dictionary, use the dictionary key syntax
+        for key in message:
+            print(key)
+            value = message[key]
+            print(value)
+            num_tokens += len(encoding.encode(str(value)))  # Make sure to convert values to string if they are not already
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += 3  # every reply is primed with assistant
+    return num_tokens
+
 
 #def model_generate(inputs, streamer, max_new_tokens):
 #    global busy
@@ -283,6 +325,7 @@ async def mainchat(request: ChatCompletionRequest):
         busy = True
 
     try:
+        #t = await num_tokens_from_messages(request.messages)
         prompt = await format_prompt(request.messages)
         if request.stream:
             response = StreamingResponse(streaming_request(prompt, request.max_tokens, response_format='chat_completion'), media_type="text/event-stream")
