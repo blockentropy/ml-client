@@ -212,8 +212,8 @@ def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = '
     )
     output = pipe(prompt, return_full_text=False)
     generated_text = output[0]['generated_text']
-    full_tokens = len(tokenizer.encode(generated_text, add_special_tokens=False))
-    completion_tokens = full_tokens - prompt_tokens
+    completion_tokens = len(tokenizer.encode(generated_text, add_special_tokens=False))
+    full_tokens = completion_tokens + prompt_tokens
 
     # Prepare the response based on the format required
     if response_format == 'completion':
