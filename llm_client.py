@@ -51,12 +51,12 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-
+repo_str = 'Phind-CodeLlama-34B-v2'
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-repo_id = config.get('Genz-70b-GPTQ', 'repo')
+repo_id = config.get(repo_str, 'repo')
 host = config.get('settings', 'host')
 port = config.getint('settings', 'port')
 
@@ -64,14 +64,21 @@ port = config.getint('settings', 'port')
 busy = False
 condition = asyncio.Condition()
 
+eightbit = False
+if repo_str == 'Phind-CodeLlama-34B-v2':
+    eightbit = True
+
+
 model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              device_map="auto",
                                              trust_remote_code=False,
                                              revision="main",
+                                             load_in_8bit=eightbit,
                                              use_flash_attention_2=True,)
 
-## Only for Llama Models
-model = exllama_set_max_input_length(model, 4096)
+if repo_str != 'Phind-CodeLlama-34B-v2':
+    ## Only for Llama Models
+    model = exllama_set_max_input_length(model, 4096)
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False)
 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
@@ -313,6 +320,19 @@ async def format_prompt(messages):
     formatted_prompt += "### Assistant:\n"
     return formatted_prompt
 
+async def format_prompt_code(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"### System Prompt\nYou are an intelligent programming assistant.\n\n"
+        elif message.role == "user":
+            formatted_prompt += f"### User Message\n{message.content}\n\n"
+        elif message.role == "assistant":
+            formatted_prompt += f"### Assistant\n{message.content}\n\n"
+    # Add the final "### Assistant" with ellipsis to prompt for the next response
+    formatted_prompt += "### Assistant\n..."
+    return formatted_prompt
+
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
 
@@ -326,7 +346,13 @@ async def mainchat(request: ChatCompletionRequest):
         t = await num_tokens_from_messages(request.messages)
         print(t)
  
-        prompt = await format_prompt(request.messages)
+        prompt = ''
+        if repo_str == 'Phind-CodeLlama-34B-v2':
+            prompt = await format_prompt_code(request.messages)
+        else:
+            prompt = await format_prompt(request.messages)
+        print(prompt)
+
         if request.stream:
             response = StreamingResponse(streaming_request(prompt, request.max_tokens, response_format='chat_completion'), media_type="text/event-stream")
         else:
