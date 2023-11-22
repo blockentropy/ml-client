@@ -61,10 +61,11 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
-def image_request(prompt: str, tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, tempmodel: str = 'XL'):
 
     negprompt = ""
-    image = stable_diffusion(prompt, negative_prompt=negprompt, generator=generator, num_inference_steps=20).images[0]
+    w, h = map(int, size.split('x'))
+    image = stable_diffusion(prompt, negative_prompt=negprompt, height=h, width=w, generator=generator, num_inference_steps=20).images[0]
 
     random_string = str(random.randint(100000, 999999))
     filename = "ai_seed"+str(seed)+"_"+random_string
@@ -88,7 +89,7 @@ async def main(request: CompletionRequest):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt)
+        response_data = image_request(request.prompt, request.size)
     
     except Exception as e:
         # Handle exception...
