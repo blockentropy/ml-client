@@ -1,8 +1,13 @@
 [settings]
 host = 0.0.0.0
 port = 12345
+upload_url = https://url/api/upload
+path_url = https://url/folder/
 
 [llama70BchatGPTQ]
 string = llama70BchatGPTQ
 repo = /home/ed/Documents/huggingface/Llama-2-70B-chat-GPTQ
 
+[be-stable-diffusion-xl-base-1.0]
+string = be-stable-diffusion-xl-base-1.0
+repo = /home/ed/Documents/huggingface/stable-diffusion-xl-base-1.0

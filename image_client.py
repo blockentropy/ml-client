@@ -31,10 +31,11 @@ class CompletionRequest(BaseModel):
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-repo_id = config.get('stable-diffusion-xl-base-1.0', 'repo')
+repo_id = config.get('be-stable-diffusion-xl-base-1.0', 'repo')
 host = config.get('settings', 'host')
 port = config.getint('settings', 'port')
 upload_url = config.get('settings', 'upload_url')
+path_url = config.get('settings', 'path_url')
 
 scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
 stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
@@ -78,7 +79,7 @@ def image_request(prompt: str, size: str, tempmodel: str = 'XL'):
         "created": int(time.time()),
         "data": [
             {
-                "url": "https://blockentropy.dev/uploads/ai/"+filename+"_full.jpg",
+                "url": path_url+filename+".jpg",
             }
         ]
         }
