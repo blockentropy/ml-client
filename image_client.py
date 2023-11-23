@@ -7,14 +7,16 @@ import time
 import configparser
 from typing import AsyncIterable, List, Generator, Union, Optional
 import torch
+from PIL import Image
 
 import requests
 import sseclient
 import random
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi import UploadFile
 from pydantic import BaseModel
 from diffusers import DiffusionPipeline, UniPCMultistepScheduler
 
@@ -23,8 +25,11 @@ logging.basicConfig(level=logging.DEBUG)
 class CompletionRequest(BaseModel):
     prompt: str
     n: Optional[int] = 1
+    image: Optional[UploadFile] = None
     response_format: Optional[str] = "url"
     size: Optional[str] = "1024x1024"
+    quality: Optional[str] = "smooth"
+    style: Optional[str] = "0.6"
     user: Optional[str] = None
 
 
@@ -32,6 +37,7 @@ config = configparser.ConfigParser()
 config.read('config.ini')
 
 repo_id = config.get('be-stable-diffusion-xl-base-1.0', 'repo')
+adapter_id = config.get('ip-adapter', 'repo')
 host = config.get('settings', 'host')
 port = config.getint('settings', 'port')
 upload_url = config.get('settings', 'upload_url')
@@ -41,6 +47,9 @@ scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="schedule
 stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
 seed = 42
 generator = torch.Generator(device="cuda").manual_seed(seed)
+
+stable_diffusion.load_ip_adapter(adapter_id, subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
+
 stable_diffusion.to(f"cuda")
 
 print("*** Loaded.. now Inference...:")
@@ -62,11 +71,25 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
-def image_request(prompt: str, size: str, tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
 
     negprompt = ""
     w, h = map(int, size.split('x'))
-    image = stable_diffusion(prompt, negative_prompt=negprompt, height=h, width=w, generator=generator, num_inference_steps=20).images[0]
+
+    args_dict = {
+        "prompt": prompt,
+        "negative_prompt": negprompt,
+        "height": h,
+        "width": w,
+        "generator": generator,
+        "num_inference_steps": 20
+    }
+
+    # Conditionally add the ip_adapter_image argument
+    if ipimage is not None:
+        args_dict["ip_adapter_image"] = ipimage
+
+    image = stable_diffusion(**args_dict).images[0]
 
     random_string = str(random.randint(100000, 999999))
     filename = "ai_seed"+str(seed)+"_"+random_string
@@ -91,6 +114,36 @@ async def main(request: CompletionRequest):
     response_data = None
     try:
         response_data = image_request(request.prompt, request.size)
+    
+    except Exception as e:
+        # Handle exception...
+        logging.error(f"An error occurred: {e}")
+        return {"error": str(e)}
+
+    return response_data
+
+@app.post('/v1/images/edits')
+async def edits(inrequest: Request):
+    form_data = await inrequest.form()
+    imageup: UploadFile = form_data.get("image")
+
+    # Extract other fields and create a dictionary to create a CompletionRequest instance
+    completion_request_data = {
+        "prompt": form_data.get("prompt"),
+        "n": int(form_data.get("n")) if form_data.get("n") else None,
+        "model": form_data.get("model"),
+        "response_format": form_data.get("response_format"),
+        "quality": form_data.get("quality"),
+        "style": form_data.get("style"),
+        "size": form_data.get("size"),
+        "user": form_data.get("user")
+    }
+
+    # Create an instance of CompletionRequest
+    request = CompletionRequest(**completion_request_data)
+    response_data = None
+    try:
+        response_data = image_request(request.prompt, request.size, imageup)
     
     except Exception as e:
         # Handle exception...
