@@ -19,12 +19,13 @@ from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from pydantic import BaseModel
 from diffusers import DiffusionPipeline, UniPCMultistepScheduler
+from diffusers.utils import load_image
 
 logging.basicConfig(level=logging.DEBUG)
 
 class CompletionRequest(BaseModel):
     prompt: str
-    n: Optional[int] = 1
+    n: Optional[int] = 42
     image: Optional[UploadFile] = None
     response_format: Optional[str] = "url"
     size: Optional[str] = "1024x1024"
@@ -46,7 +47,7 @@ path_url = config.get('settings', 'path_url')
 scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
 stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
 seed = 42
-generator = torch.Generator(device="cuda").manual_seed(seed)
+generator = torch.Generator("cpu").manual_seed(seed)
 
 stable_diffusion.load_ip_adapter(adapter_id, subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
 
@@ -71,10 +72,11 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
-def image_request(prompt: str, size: str, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
 
     negprompt = ""
     w, h = map(int, size.split('x'))
+    generator = torch.Generator("cpu").manual_seed(seed)
 
     args_dict = {
         "prompt": prompt,
@@ -84,10 +86,14 @@ def image_request(prompt: str, size: str, ipimage: Optional[Image.Image] = None,
         "generator": generator,
         "num_inference_steps": 20
     }
-
+    ipimagenone = load_image("512x512bb.jpeg")
     # Conditionally add the ip_adapter_image argument
     if ipimage is not None:
         args_dict["ip_adapter_image"] = ipimage
+        stable_diffusion.set_ip_adapter_scale(0.5)
+    else:
+        args_dict["ip_adapter_image"] = ipimagenone
+        stable_diffusion.set_ip_adapter_scale(0.0)
 
     image = stable_diffusion(**args_dict).images[0]
 
@@ -113,7 +119,7 @@ async def main(request: CompletionRequest):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size)
+        response_data = image_request(request.prompt, request.size, request.n)
     
     except Exception as e:
         # Handle exception...
@@ -141,9 +147,17 @@ async def edits(inrequest: Request):
 
     # Create an instance of CompletionRequest
     request = CompletionRequest(**completion_request_data)
+
+    tensor_image = None
+    if imageup:
+        image_data = await imageup.read()
+        tensor_image = Image.open(io.BytesIO(image_data))
+    else:
+        tensor_image = None
+
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, imageup)
+        response_data = image_request(request.prompt, request.size, request.n, tensor_image)
     
     except Exception as e:
         # Handle exception...
