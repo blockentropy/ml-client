@@ -5,6 +5,7 @@ import logging
 import time
 import configparser
 import tiktoken
+import torch
 from typing import AsyncIterable, List, Generator, Union, Optional
 
 import requests
@@ -51,7 +52,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Phind-CodeLlama-34B-v2'
+repo_str = 'zephyr-7b-beta'
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -68,15 +69,19 @@ eightbit = False
 if repo_str == 'Phind-CodeLlama-34B-v2':
     eightbit = True
 
+torch_dtype = torch.float32  # Set a default dtype
+if repo_str == 'zephyr-7b-beta':
+    torch_dtype = torch.float16
 
 model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              device_map="auto",
                                              trust_remote_code=False,
                                              revision="main",
                                              load_in_8bit=eightbit,
+                                             torch_dtype=torch_dtype,
                                              use_flash_attention_2=True,)
 
-if repo_str != 'Phind-CodeLlama-34B-v2':
+if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 4096)
 
@@ -139,6 +144,15 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
     """
     global busy
     inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
+
+    prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
+    if prompt_tokens > 8192:
+        busy = False
+        yield 'data: [DONE]'
+        async with condition:
+            condition.notify_all()
+        return
+
     generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens)
     thread = Thread(target=model.generate, kwargs=generation_kwargs)
     thread.start()
@@ -206,19 +220,27 @@ def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = '
     # Assume generated_text is the output text you want to return
     # and assume you have a way to calculate prompt_tokens and completion_tokens
     prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
+    #print("Prompt Tokens: " + str(prompt_tokens))
 
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=max_tokens,
-        temperature=0.0,
-        #top_p=0.95,
-        #top_k=40,
-        repetition_penalty=1.1,
-    )
-    output = pipe(prompt, return_full_text=False)
-    generated_text = output[0]['generated_text']
+    generated_text = ''
+    try:
+        pipe = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=max_tokens,
+            temperature=0.0,
+            #top_p=0.95,
+            #top_k=40,
+            repetition_penalty=1.1,
+        )
+        output = pipe(prompt, return_full_text=False)
+        generated_text = output[0]['generated_text']
+    except torch.cuda.OutOfMemoryError:
+        print("CUDA out of memory error caught. Attempting to free up memory.")
+        torch.cuda.empty_cache()  # Free up unoccupied cached memory
+        generated_text = "out of memory"
+
     completion_tokens = len(tokenizer.encode(generated_text, add_special_tokens=False))
     full_tokens = completion_tokens + prompt_tokens
 
@@ -333,6 +355,20 @@ async def format_prompt_code(messages):
     formatted_prompt += "### Assistant\n..."
     return formatted_prompt
 
+async def format_prompt_zephyr(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"<|system|>\n{message.content}</s>\n"
+        elif message.role == "user":
+            formatted_prompt += f"<|user|>\n{message.content}</s>\n"
+        elif message.role == "assistant":
+            formatted_prompt += f"<|assistant|>\n{message.content}</s>\n"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "<|assistant|>\n"
+    return formatted_prompt
+
+
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
 
@@ -349,6 +385,8 @@ async def mainchat(request: ChatCompletionRequest):
         prompt = ''
         if repo_str == 'Phind-CodeLlama-34B-v2':
             prompt = await format_prompt_code(request.messages)
+        elif repo_str == 'zephyr-7b-beta':
+            prompt = await format_prompt_zephyr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         print(prompt)
