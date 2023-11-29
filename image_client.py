@@ -152,6 +152,7 @@ async def edits(inrequest: Request):
     if imageup:
         image_data = await imageup.read()
         tensor_image = Image.open(io.BytesIO(image_data))
+        tensor_image = tensor_image.resize((512, 512))
     else:
         tensor_image = None
 
