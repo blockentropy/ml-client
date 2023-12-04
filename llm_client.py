@@ -309,9 +309,9 @@ async def main(request: CompletionRequest):
             prompt = request.prompt
 
         if request.stream:
-            response = StreamingResponse(streaming_request(prompt, request.max_tokens), media_type="text/event-stream")
+            response = StreamingResponse(streaming_request(prompt, request.max_tokens, tempmodel=repo_str), media_type="text/event-stream")
         else:
-            response_data = non_streaming_request(prompt, request.max_tokens)
+            response_data = non_streaming_request(prompt, request.max_tokens, tempmodel=repo_str)
             response = response_data  # This will return a JSON response
     
     except Exception as e:
