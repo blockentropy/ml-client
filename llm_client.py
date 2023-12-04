@@ -52,7 +52,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'zephyr-7b-beta'
+repo_str = 'Starling-LM-7B-alpha'
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -70,7 +70,7 @@ if repo_str == 'Phind-CodeLlama-34B-v2':
     eightbit = True
 
 torch_dtype = torch.float32  # Set a default dtype
-if repo_str == 'zephyr-7b-beta':
+if repo_str == 'zephyr-7b-beta' or repo_str == 'Starling-LM-7B-alpha':
     torch_dtype = torch.float16
 
 model = AutoModelForCausalLM.from_pretrained(repo_id,
@@ -137,7 +137,7 @@ async def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613"):
 #    model.generate(input_ids=inputs['input_ids'], streamer=streamer, max_new_tokens=max_new_tokens)
 #    busy = False
 
-async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70', response_format: str = 'completion'):
+async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str = 'Llama70', response_format: str = 'completion'):
     """Generator for each chunk received from OpenAI as response
     :param response_format: 'text_completion' or 'chat_completion' to set the output format
     :return: generator object for streaming response from OpenAI
@@ -170,6 +170,11 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
             reason = "stop"
             # Strip the </s> from the new_text
             new_text = new_text.replace("</s>", "")
+
+        if "<|end_of_turn|>" in new_text:
+            reason = "stop"
+            # Strip the </s> from the new_text
+            new_text = new_text.replace("<|end_of_turn|>", "")
         
         if response_format == 'chat_completion':
             response_data = {
@@ -215,7 +220,7 @@ async def streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str =
     async with condition:
         condition.notify_all()
 
-def non_streaming_request(prompt: str, max_tokens: int = 100, tempmodel: str = 'Llama70', response_format: str = 'completion'):
+def non_streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str = 'Llama70', response_format: str = 'completion'):
 
     # Assume generated_text is the output text you want to return
     # and assume you have a way to calculate prompt_tokens and completion_tokens
@@ -368,6 +373,24 @@ async def format_prompt_zephyr(messages):
     formatted_prompt += "<|assistant|>\n"
     return formatted_prompt
 
+async def format_prompt_starling(messages):
+    formatted_prompt = ""
+    system_message = ""
+    for message in messages:
+        if message.role == "system":
+            # Save system message to prepend to the first user message
+            system_message += f"{message.content}\n\n"
+        elif message.role == "user":
+            # Prepend system message if it exists
+            if system_message:
+                formatted_prompt += f"GPT4 Correct User: {system_message}{message.content}<|end_of_turn|>"
+                system_message = ""  # Clear system message after prepending
+            else:
+                formatted_prompt += f"GPT4 Correct User: {message.content}<|end_of_turn|>"
+        elif message.role == "assistant":
+            formatted_prompt += f"GPT4 Correct Assistant: {message.content}<|end_of_turn|>"  # Prep for user follow-up
+        formatted_prompt += "GPT4 Correct Assistant: \n\n"
+    return formatted_prompt
 
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
@@ -387,6 +410,8 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_code(request.messages)
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
+        elif repo_str == 'Starling-LM-7B-alpha':
+            prompt = await format_prompt_starling(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         print(prompt)
