@@ -54,12 +54,21 @@ class ChatCompletionRequest(BaseModel):
 
 repo_str = 'Starling-LM-7B-alpha'
 
+parser = argparse.ArgumentParser(description='Run server with specified port.')
+
+# Add argument for port with default type as integer
+parser.add_argument('--port', type=int, help='Port to run the server on.')
+
+# Parse the arguments
+args = parser.parse_args()
+
 config = configparser.ConfigParser()
 config.read('config.ini')
 
 repo_id = config.get(repo_str, 'repo')
 host = config.get('settings', 'host')
-port = config.getint('settings', 'port')
+
+port = args.port if args.port is not None else config.getint('settings', 'port')
 
 # only allow one client at a time
 busy = False
