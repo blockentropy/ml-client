@@ -399,7 +399,7 @@ async def format_prompt_starling(messages):
                 formatted_prompt += f"GPT4 Correct User: {message.content}<|end_of_turn|>"
         elif message.role == "assistant":
             formatted_prompt += f"GPT4 Correct Assistant: {message.content}<|end_of_turn|>"  # Prep for user follow-up
-        formatted_prompt += "GPT4 Correct Assistant: \n\n"
+    formatted_prompt += "GPT4 Correct Assistant: \n\n"
     return formatted_prompt
 
 @app.post('/v1/chat/completions')
