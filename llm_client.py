@@ -23,13 +23,14 @@ from auto_gptq import exllama_set_max_input_length
 class CompletionRequest(BaseModel):
     model: str
     prompt: Union[str, List[str]]
-    stop: Optional[str] = None
+    stop: Optional[Union[str, List[str]]] = None
     max_tokens: Optional[int] = 100  # default value of 100
     temperature: Optional[float] = 0.0  # default value of 0.0
     stream: Optional[bool] = False  # default value of False
     best_of: Optional[int] = 1
     echo: Optional[bool] = False
     frequency_penalty: Optional[float] = 0.0  # default value of 0.0
+    presence_penalty: Optional[float] = 0.0  # default value of 0.0
     log_probs: Optional[int] = 0  # default value of 0.0
     n: Optional[int] = 1  # default value of 1, batch size
     suffix: Optional[str] = None
@@ -43,17 +44,18 @@ class Message(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[Message]
-    stop: Optional[str] = None
+    stop: Optional[Union[str, List[str]]] = None
     max_tokens: Optional[int] = 100  # default value of 100
     temperature: Optional[float] = 0.0  # default value of 0.0
     stream: Optional[bool] = False  # default value of False
     frequency_penalty: Optional[float] = 0.0  # default value of 0.0
+    presence_penalty: Optional[float] = 0.0  # default value of 0.0
     log_probs: Optional[int] = 0  # default value of 0.0
     n: Optional[int] = 1  # default value of 1, batch size
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Starling-LM-7B-alpha'
+repo_str = 'Genz-70b-GPTQ'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -79,7 +81,7 @@ eightbit = False
 if repo_str == 'Phind-CodeLlama-34B-v2':
     eightbit = True
 
-torch_dtype = torch.float32  # Set a default dtype
+torch_dtype = torch.float16  # Set a default dtype
 if repo_str == 'zephyr-7b-beta' or repo_str == 'Starling-LM-7B-alpha':
     torch_dtype = torch.float16
 
