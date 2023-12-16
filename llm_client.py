@@ -55,7 +55,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Genz-70b-GPTQ'
+repo_str = 'Mixtral-8x7B-Instruct-v0.1-GPTQ'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -85,13 +85,18 @@ torch_dtype = torch.float16  # Set a default dtype
 if repo_str == 'zephyr-7b-beta' or repo_str == 'Starling-LM-7B-alpha':
     torch_dtype = torch.float16
 
+revision = "main"
+if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+    revision = 'gptq-4bit-32g-actorder_True'
+
 model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              device_map="auto",
                                              trust_remote_code=False,
-                                             revision="main",
+                                             revision=revision,
                                              load_in_8bit=eightbit,
                                              torch_dtype=torch_dtype,
-                                             use_flash_attention_2=True,)
+                                             use_flash_attention_2=True,
+                                             )
 
 if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ':
     ## Only for Llama Models
@@ -402,6 +407,24 @@ async def format_prompt_starling(messages):
         elif message.role == "assistant":
             formatted_prompt += f"GPT4 Correct Assistant: {message.content}<|end_of_turn|>"  # Prep for user follow-up
     formatted_prompt += "GPT4 Correct Assistant: \n\n"
+    return formatted_prompt
+
+async def format_prompt_mixtral(messages):
+    formatted_prompt = "<s> "
+    system_message = ""
+    for message in messages:
+        if message.role == "system":
+            # Save system message to prepend to the first user message
+            system_message += f"{message.content}\n\n"
+        elif message.role == "user":
+            # Prepend system message if it exists
+            if system_message:
+                formatted_prompt += f"[INST] {system_message}{message.content} [/INST] "
+                system_message = ""  # Clear system message after prepending
+            else:
+                formatted_prompt += f"[INST] {message.content} [/INST] "
+        elif message.role == "assistant":
+            formatted_prompt += f" {message.content}</s> "  # Prep for user follow-up
     return formatted_prompt
 
 @app.post('/v1/chat/completions')
