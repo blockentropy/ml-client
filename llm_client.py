@@ -212,6 +212,11 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
             # Strip the </s> from the new_text
             new_text = new_text.replace("<|im_end|>", "")
         
+        if "<|endoftext|>" in new_text:
+            reason = "stop"
+            # Strip the </s> from the new_text
+            new_text = new_text.replace("<|endoftext|>", "")
+        
         if response_format == 'chat_completion':
             response_data = {
                 "id": completion_id,
