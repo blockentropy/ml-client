@@ -158,11 +158,14 @@ async def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613"):
     return num_tokens
 
 
-#def model_generate(inputs, streamer, max_new_tokens):
-#    global busy
-#    busy = True
-#    model.generate(input_ids=inputs['input_ids'], streamer=streamer, max_new_tokens=max_new_tokens)
-#    busy = False
+def thread_task(model, inputs, generation_kwargs):
+    try:
+        model.generate(**generation_kwargs)
+    finally:
+        # Cleanup after generation is done
+        del inputs
+        torch.cuda.empty_cache()
+
 
 async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str = 'Llama70', response_format: str = 'completion'):
     """Generator for each chunk received from OpenAI as response
@@ -182,7 +185,8 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
         return
 
     generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens)
-    thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    #thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    thread = Thread(target=thread_task, args=(model, inputs, generation_kwargs))
     thread.start()
     generated_text = ""
     completion_id = f"chatcmpl-{int(time.time() * 1000)}"  # Unique ID for the completion
