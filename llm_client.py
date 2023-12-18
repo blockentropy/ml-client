@@ -86,7 +86,7 @@ if repo_str == 'zephyr-7b-beta' or repo_str == 'Starling-LM-7B-alpha':
     torch_dtype = torch.float16
 
 revision = "main"
-if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ' or repo_str == 'Yi-34B-Chat-GPTQ':
     revision = 'gptq-4bit-32g-actorder_True'
 
 model = AutoModelForCausalLM.from_pretrained(repo_id,
@@ -98,6 +98,7 @@ model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              use_flash_attention_2=True,
                                              )
 
+max_input_length = 4096
 if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 4096)
@@ -105,6 +106,7 @@ if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ':
 if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 8192)
+    max_input_length = 8192
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False)
 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
@@ -167,7 +169,8 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
     inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
 
     prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
-    if prompt_tokens > 8192:
+    if prompt_tokens > max_input_length:
+        print("Warning: over 8192 tokens in context.")
         busy = False
         yield 'data: [DONE]'
         async with condition:
@@ -368,6 +371,19 @@ async def format_prompt(messages):
     formatted_prompt += "### Assistant:\n"
     return formatted_prompt
 
+async def format_prompt_yi(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"<|im_start|>system\n{message.content}<|im_end|>\n"
+        elif message.role == "user":
+            formatted_prompt += f"<|im_start|>user\n{message.content}<|im_end|>\n"
+        elif message.role == "assistant":
+            formatted_prompt += f"<|im_start|>assistant\n{message.content}<|im_end|>\n"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "<|im_start|>assistant\n"
+    return formatted_prompt
+
 async def format_prompt_code(messages):
     formatted_prompt = ""
     for message in messages:
@@ -451,6 +467,10 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_zephyr(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
+        elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+            prompt = await format_prompt_mixtral(request.messages)
+        elif repo_str == 'Yi-34B-Chat-GPTQ':
+            prompt = await format_prompt_yi(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         print(prompt)
