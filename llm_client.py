@@ -113,6 +113,7 @@ if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
     max_input_length = 8192
 
 if repo_str == 'Nous-Capybara-34B-GPTQ':
+    model = exllama_set_max_input_length(model, 16384)
     max_input_length = 16384
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False, trust_remote_code=remote_code)
