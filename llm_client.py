@@ -263,7 +263,7 @@ def non_streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str = 
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=max_tokens,
-            temperature=0.0,
+            temperature=0.01,
             #top_p=0.95,
             #top_k=40,
             repetition_penalty=1.1,
