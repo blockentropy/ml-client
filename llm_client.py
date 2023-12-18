@@ -107,14 +107,10 @@ if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ' or repo_st
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 4096)
 
-if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ' or repo_str == 'Nous-Capybara-34B-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 8192)
     max_input_length = 8192
-
-if repo_str == 'Nous-Capybara-34B-GPTQ':
-    model = exllama_set_max_input_length(model, 16384)
-    max_input_length = 16384
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False, trust_remote_code=remote_code)
 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
