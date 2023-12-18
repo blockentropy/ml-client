@@ -55,7 +55,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Mixtral-8x7B-Instruct-v0.1-GPTQ'
+repo_str = 'Yi-34B-Chat-GPTQ'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -99,7 +99,7 @@ model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              )
 
 max_input_length = 4096
-if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ':
+if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ' or repo_str == 'Yi-34B-Chat-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 4096)
 
@@ -170,7 +170,7 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
 
     prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
     if prompt_tokens > max_input_length:
-        print("Warning: over 8192 tokens in context.")
+        print(f"Warning: over {max_input_length} tokens in context.")
         busy = False
         yield 'data: [DONE]'
         async with condition:
@@ -199,6 +199,11 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
             reason = "stop"
             # Strip the </s> from the new_text
             new_text = new_text.replace("<|end_of_turn|>", "")
+
+        if "<|im_end|>" in new_text:
+            reason = "stop"
+            # Strip the </s> from the new_text
+            new_text = new_text.replace("<|im_end|>", "")
         
         if response_format == 'chat_completion':
             response_data = {
