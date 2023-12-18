@@ -55,7 +55,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Yi-34B-Chat-GPTQ'
+repo_str = 'Nous-Capybara-34B-GPTQ'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -107,6 +107,9 @@ if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 8192)
     max_input_length = 8192
+
+if repo_str == 'Nous-Capybara-34B-GPTQ':
+    max_input_length = 16384
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False)
 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
@@ -389,6 +392,19 @@ async def format_prompt_yi(messages):
     formatted_prompt += "<|im_start|>assistant\n"
     return formatted_prompt
 
+async def format_prompt_nous(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"{message.content}\n\n"
+        elif message.role == "user":
+            formatted_prompt += f"USER:\n{message.content}\n"
+        elif message.role == "assistant":
+            formatted_prompt += f"ASSISTANT:\n{message.content}\n"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "ASSISTANT:\n"
+    return formatted_prompt
+
 async def format_prompt_code(messages):
     formatted_prompt = ""
     for message in messages:
@@ -476,6 +492,8 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_mixtral(request.messages)
         elif repo_str == 'Yi-34B-Chat-GPTQ':
             prompt = await format_prompt_yi(request.messages)
+        elif repo_str == 'Nous-Capybara-34B-GPTQ':
+            prompt = await format_prompt_nous(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         print(prompt)
