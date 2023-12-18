@@ -89,9 +89,13 @@ revision = "main"
 if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ' or repo_str == 'Yi-34B-Chat-GPTQ':
     revision = 'gptq-4bit-32g-actorder_True'
 
+remote_code = False
+if repo_str == 'Nous-Capybara-34B-GPTQ':
+    remote_code = True
+
 model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              device_map="auto",
-                                             trust_remote_code=False,
+                                             trust_remote_code=remote_code,
                                              revision=revision,
                                              load_in_8bit=eightbit,
                                              torch_dtype=torch_dtype,
@@ -111,7 +115,7 @@ if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
 if repo_str == 'Nous-Capybara-34B-GPTQ':
     max_input_length = 16384
 
-tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False)
+tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False, trust_remote_code=remote_code)
 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
 
 print("*** Loaded.. now Inference...:")
