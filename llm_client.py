@@ -161,9 +161,34 @@ async def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613"):
 def thread_task(model, inputs, generation_kwargs):
     try:
         model.generate(**generation_kwargs)
+    except torch.cuda.OutOfMemoryError:
+        print("CUDA Out of Memory error caught in thread. Attempting to free up memory.")
+        # Move and detach tensors from GPU, then delete inputs
+        if torch.is_tensor(inputs):
+            if inputs.requires_grad:
+                inputs = inputs.detach()
+            inputs = inputs.to('cpu')
+        del inputs
+
+        torch.cuda.empty_cache()  # Free up unoccupied cached memory
+
+        # Remove the key associated with 'inputs' in generation_kwargs
+        if 'inputs' in generation_kwargs:
+            del generation_kwargs['inputs']
+
+        time.sleep(5) 
+        # Create new inputs and update generation_kwargs
+        new_inputs = tokenizer(["USER: say, 'out of memory'\nASSISTANT:"], return_tensors="pt").to("cuda")
+        generation_kwargs.update(new_inputs)
+
+        # Retry generation with new input
+        model.generate(**generation_kwargs)
+        torch.cuda.empty_cache()
+
     finally:
         # Cleanup after generation is done
-        del inputs
+        if 'inputs' in locals():  # Check if 'inputs' is still in the local namespace
+            del inputs
         torch.cuda.empty_cache()
 
 
