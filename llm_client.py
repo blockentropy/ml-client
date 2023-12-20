@@ -23,13 +23,14 @@ from auto_gptq import exllama_set_max_input_length
 class CompletionRequest(BaseModel):
     model: str
     prompt: Union[str, List[str]]
-    stop: Optional[str] = None
+    stop: Optional[Union[str, List[str]]] = None
     max_tokens: Optional[int] = 100  # default value of 100
     temperature: Optional[float] = 0.0  # default value of 0.0
     stream: Optional[bool] = False  # default value of False
     best_of: Optional[int] = 1
     echo: Optional[bool] = False
     frequency_penalty: Optional[float] = 0.0  # default value of 0.0
+    presence_penalty: Optional[float] = 0.0  # default value of 0.0
     log_probs: Optional[int] = 0  # default value of 0.0
     n: Optional[int] = 1  # default value of 1, batch size
     suffix: Optional[str] = None
@@ -43,17 +44,18 @@ class Message(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[Message]
-    stop: Optional[str] = None
+    stop: Optional[Union[str, List[str]]] = None
     max_tokens: Optional[int] = 100  # default value of 100
     temperature: Optional[float] = 0.0  # default value of 0.0
     stream: Optional[bool] = False  # default value of False
     frequency_penalty: Optional[float] = 0.0  # default value of 0.0
+    presence_penalty: Optional[float] = 0.0  # default value of 0.0
     log_probs: Optional[int] = 0  # default value of 0.0
     n: Optional[int] = 1  # default value of 1, batch size
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Starling-LM-7B-alpha'
+repo_str = 'Nous-Capybara-34B-GPTQ'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -79,23 +81,38 @@ eightbit = False
 if repo_str == 'Phind-CodeLlama-34B-v2':
     eightbit = True
 
-torch_dtype = torch.float32  # Set a default dtype
+torch_dtype = torch.float16  # Set a default dtype
 if repo_str == 'zephyr-7b-beta' or repo_str == 'Starling-LM-7B-alpha':
     torch_dtype = torch.float16
 
+revision = "main"
+if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ' or repo_str == 'Yi-34B-Chat-GPTQ':
+    revision = 'gptq-4bit-32g-actorder_True'
+
+remote_code = False
+if repo_str == 'Nous-Capybara-34B-GPTQ':
+    remote_code = True
+
 model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              device_map="auto",
-                                             trust_remote_code=False,
-                                             revision="main",
+                                             trust_remote_code=remote_code,
+                                             revision=revision,
                                              load_in_8bit=eightbit,
                                              torch_dtype=torch_dtype,
-                                             use_flash_attention_2=True,)
+                                             use_flash_attention_2=True,
+                                             )
 
-if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ':
+max_input_length = 4096
+if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ' or repo_str == 'Yi-34B-Chat-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 4096)
 
-tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False)
+if repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ' or repo_str == 'Nous-Capybara-34B-GPTQ':
+    ## Only for Llama Models
+    model = exllama_set_max_input_length(model, 8192)
+    max_input_length = 8192
+
+tokenizer = AutoTokenizer.from_pretrained(repo_id, use_fast=False, trust_remote_code=remote_code)
 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True)
 
 print("*** Loaded.. now Inference...:")
@@ -141,11 +158,39 @@ async def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613"):
     return num_tokens
 
 
-#def model_generate(inputs, streamer, max_new_tokens):
-#    global busy
-#    busy = True
-#    model.generate(input_ids=inputs['input_ids'], streamer=streamer, max_new_tokens=max_new_tokens)
-#    busy = False
+def thread_task(model, inputs, generation_kwargs):
+    try:
+        model.generate(**generation_kwargs)
+    except torch.cuda.OutOfMemoryError:
+        print("CUDA Out of Memory error caught in thread. Attempting to free up memory.")
+        # Move and detach tensors from GPU, then delete inputs
+        if torch.is_tensor(inputs):
+            if inputs.requires_grad:
+                inputs = inputs.detach()
+            inputs = inputs.to('cpu')
+        del inputs
+
+        torch.cuda.empty_cache()  # Free up unoccupied cached memory
+
+        # Remove the key associated with 'inputs' in generation_kwargs
+        if 'inputs' in generation_kwargs:
+            del generation_kwargs['inputs']
+
+        time.sleep(5) 
+        # Create new inputs and update generation_kwargs
+        new_inputs = tokenizer(["USER: say, 'out of memory'\nASSISTANT:"], return_tensors="pt").to("cuda")
+        generation_kwargs.update(new_inputs)
+
+        # Retry generation with new input
+        model.generate(**generation_kwargs)
+        torch.cuda.empty_cache()
+
+    finally:
+        # Cleanup after generation is done
+        if 'inputs' in locals():  # Check if 'inputs' is still in the local namespace
+            del inputs
+        torch.cuda.empty_cache()
+
 
 async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str = 'Llama70', response_format: str = 'completion'):
     """Generator for each chunk received from OpenAI as response
@@ -156,7 +201,8 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
     inputs = tokenizer([prompt], return_tensors="pt").to("cuda")
 
     prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
-    if prompt_tokens > 8192:
+    if prompt_tokens > max_input_length:
+        print(f"Warning: over {max_input_length} tokens in context.")
         busy = False
         yield 'data: [DONE]'
         async with condition:
@@ -164,7 +210,8 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
         return
 
     generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens)
-    thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    #thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    thread = Thread(target=thread_task, args=(model, inputs, generation_kwargs))
     thread.start()
     generated_text = ""
     completion_id = f"chatcmpl-{int(time.time() * 1000)}"  # Unique ID for the completion
@@ -185,6 +232,16 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
             reason = "stop"
             # Strip the </s> from the new_text
             new_text = new_text.replace("<|end_of_turn|>", "")
+
+        if "<|im_end|>" in new_text:
+            reason = "stop"
+            # Strip the </s> from the new_text
+            new_text = new_text.replace("<|im_end|>", "")
+        
+        if "<|endoftext|>" in new_text:
+            reason = "stop"
+            # Strip the </s> from the new_text
+            new_text = new_text.replace("<|endoftext|>", "")
         
         if response_format == 'chat_completion':
             response_data = {
@@ -244,7 +301,7 @@ def non_streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str = 
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=max_tokens,
-            temperature=0.0,
+            temperature=0.01,
             #top_p=0.95,
             #top_k=40,
             repetition_penalty=1.1,
@@ -357,6 +414,32 @@ async def format_prompt(messages):
     formatted_prompt += "### Assistant:\n"
     return formatted_prompt
 
+async def format_prompt_yi(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"<|im_start|>system\n{message.content}<|im_end|>\n"
+        elif message.role == "user":
+            formatted_prompt += f"<|im_start|>user\n{message.content}<|im_end|>\n"
+        elif message.role == "assistant":
+            formatted_prompt += f"<|im_start|>assistant\n{message.content}<|im_end|>\n"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "<|im_start|>assistant\n"
+    return formatted_prompt
+
+async def format_prompt_nous(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"{message.content}\n\n"
+        elif message.role == "user":
+            formatted_prompt += f"USER:\n{message.content}\n"
+        elif message.role == "assistant":
+            formatted_prompt += f"ASSISTANT:\n{message.content}\n"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "ASSISTANT:\n"
+    return formatted_prompt
+
 async def format_prompt_code(messages):
     formatted_prompt = ""
     for message in messages:
@@ -399,7 +482,25 @@ async def format_prompt_starling(messages):
                 formatted_prompt += f"GPT4 Correct User: {message.content}<|end_of_turn|>"
         elif message.role == "assistant":
             formatted_prompt += f"GPT4 Correct Assistant: {message.content}<|end_of_turn|>"  # Prep for user follow-up
-        formatted_prompt += "GPT4 Correct Assistant: \n\n"
+    formatted_prompt += "GPT4 Correct Assistant: \n\n"
+    return formatted_prompt
+
+async def format_prompt_mixtral(messages):
+    formatted_prompt = "<s> "
+    system_message = ""
+    for message in messages:
+        if message.role == "system":
+            # Save system message to prepend to the first user message
+            system_message += f"{message.content}\n\n"
+        elif message.role == "user":
+            # Prepend system message if it exists
+            if system_message:
+                formatted_prompt += f"[INST] {system_message}{message.content} [/INST] "
+                system_message = ""  # Clear system message after prepending
+            else:
+                formatted_prompt += f"[INST] {message.content} [/INST] "
+        elif message.role == "assistant":
+            formatted_prompt += f" {message.content}</s> "  # Prep for user follow-up
     return formatted_prompt
 
 @app.post('/v1/chat/completions')
@@ -422,6 +523,12 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_zephyr(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
+        elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+            prompt = await format_prompt_mixtral(request.messages)
+        elif repo_str == 'Yi-34B-Chat-GPTQ':
+            prompt = await format_prompt_yi(request.messages)
+        elif repo_str == 'Nous-Capybara-34B-GPTQ':
+            prompt = await format_prompt_nous(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         print(prompt)
