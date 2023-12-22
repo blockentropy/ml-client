@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoModel, AutoTokenizer, pipeline, TextStreamer, TextIteratorStreamer
 from threading import Thread, BoundedSemaphore
-import llm_blender
+from llmlingua import PromptCompressor
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -30,7 +30,7 @@ args = parser.parse_args()
 logging.basicConfig(level=logging.DEBUG)
 
 class CompletionRequest(BaseModel):
-    model: Optional[str] = "PairRM"
+    model: Optional[str] = "Yi"
     input: Union[str, List[str], List[List[str]]]
     output: Union[str, List[str], List[List[str]]]
     user: Optional[str] = None
@@ -39,28 +39,27 @@ class CompletionRequest(BaseModel):
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-repo_id = config.get('PairRM', 'repo')
+#repo_id = config.get('PairRM', 'repo')
 host = config.get('settings', 'host')
 port = args.port if args.port is not None else config.getint('settings', 'port')
 
-blender = llm_blender.Blender()
-blender.loadranker(repo_id) # load ranker checkpoint
+llm_lingua = PromptCompressor()
 
 print("*** Loaded.. now Rank...:")
 
-app = FastAPI(title="Blender-Rerank")
+app = FastAPI(title="Compressor-Rerank")
 
-@app.post('/v1/rank')
+@app.post('/v1/compress')
 async def main(request: CompletionRequest):
 
     response_data = None
     try:
         print(request.input)
         print(request.output)
-        ranks = blender.rank(request.input, request.output, return_scores=False, batch_size=1)
-        response_data = {
-            "rank": ranks.tolist() if isinstance(ranks, np.ndarray) else ranks
-        }
+
+        
+        compressed_prompt = llm_lingua.compress_prompt(prompt, instruction="", question="", target_token=200)
+        print(compressed_prompt)
     
     except Exception as e:
         # Handle exception...
