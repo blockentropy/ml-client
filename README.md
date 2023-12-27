@@ -13,7 +13,7 @@ This repository contains custom endpoints for use in distributed and decentraliz
 ### OpenAI Compatible Endpoints
 
 - `llm_client.py`: LLM chat compatible endpoint. Supported models include Yi, Starling, Mixtral, Mistral, Phind, Llama, and more.
-- `image_client.py`: Image compatible endpoint. Supported models include SD1.5 diffusion models, and SDXL diffusion models.
+- `image_client.py`: Image compatible endpoint. Supported models include SD1.5 diffusion models, and SDXL diffusion models.  Also added support for [IP adapters](https://github.com/tencent-ailab/IP-Adapter) for images/edits endpoint.
 - `embedding_client.py`: Vector embedding compatible endpoint. Supported models include the BGE embedding models.
 
 _Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project](https://github.com/vllm-project/vllm). Differences include support for HuggingFace models, GPTQ quantization, and basic authentication with the Entropy router. They also handle the prompt template of different models within the custom code.
