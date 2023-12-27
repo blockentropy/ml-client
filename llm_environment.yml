@@ -1,4 +1,4 @@
-name: bellama
+name: bellm
 channels:
   - defaults
 dependencies:
@@ -59,6 +59,7 @@ dependencies:
       - fastcore==1.5.29
       - filelock==3.12.4
       - filetype==1.2.0
+      - flash-attn==2.4.2
       - frozenlist==1.4.0
       - fs==2.4.16
       - fsspec==2023.6.0
@@ -156,6 +157,7 @@ dependencies:
       - sympy==1.12
       - tabulate==0.9.0
       - tenacity==8.2.3
+      - tiktoken==0.5.2
       - tokenizers==0.14.1
       - tomli==2.0.1
       - torch==2.1.0
@@ -174,4 +176,3 @@ dependencies:
       - xxhash==3.4.1
       - yarl==1.9.2
       - zipp==3.17.0
-prefix: /home/ed/miniconda3/envs/bellama
