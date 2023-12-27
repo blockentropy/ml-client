@@ -1,1 +1,40 @@
-# ml-client
+# Entropy ML Clients
+
+OpenAI compatible clients for distributed and decentralized compute
+
+## Latest News
+
+- **2023/12:** Initial release of ML endpoints
+
+## About
+
+This repository contains custom endpoints for use in distributed and decentralized compute. Most of these endpoints are compatible with OpenAI, including the LLM client, image client, and embedding clients. There are additional custom endpoints that support state-of-the-art research features, allowing the Entropy API to achieve competitive performance results with GPT-4 models.
+
+### OpenAI Compatible Endpoints
+
+- `llm_client.py`: LLM chat compatible endpoint. Supported models include Yi, Starling, Mixtral, Mistral, Phind, Llama, and more.
+- `image_client.py`: Image compatible endpoint. Supported models include SD1.5 diffusion models, and SDXL diffusion models.
+- `embedding_client.py`: Vector embedding compatible endpoint. Supported models include the BGE embedding models.
+
+_Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project](https://github.com/vllm-project/vllm). Differences include support for HuggingFace models, GPTQ quantization, and basic authentication with the Entropy router. They also handle the prompt template of different models within the custom code.
+
+### Custom Research Endpoints
+
+- `rerank_client.py`: This rerank endpoint takes in an input and a list of several output strings, then returns a rank of the best outputs. Based on research by [LLM-Blender](https://github.com/yuchenlin/LLM-Blender). The API endpoint is `v1/rank`.
+- `compress_client.py`: This compression endpoint takes in an input and compresses it, maintaining the structure and meaning of the original input. Based on research by [LLMLingua](https://github.com/microsoft/LLMLingua). The API endpoints are `v1/compress` and `v1/compresslong`.
+
+### Conda Environments
+
+- `llm_environment.yml`: Conda environment needed for the LLMs.
+- `guardrails_environment.yml`: Conda environment needed to set up guardrails for those interested in trustworthy, safe, and controllable LLM conversations. Based on research by [NVIDIA NeMo-Guardrails](https://github.com/NVIDIA/NeMo-Guardrails).
+
+## Installation
+
+The endpoints were installed on Ubuntu 22 and 23 Linux-based machines.
+
+```bash
+conda env create -f llm_environment.yml
+conda activate bellm
+
+python3 llm_client.py
+```
