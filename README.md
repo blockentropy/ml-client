@@ -28,9 +28,13 @@ _Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project]
 - `llm_environment.yml`: Conda environment needed for the LLMs.
 - `guardrails_environment.yml`: Conda environment needed to set up guardrails for those interested in trustworthy, safe, and controllable LLM conversations. Based on research by [NVIDIA NeMo-Guardrails](https://github.com/NVIDIA/NeMo-Guardrails).
 
+### Config
+
+- `config.ini.sample`: Configuration file that points to model directories, port, upload destination (for image generation).  Rename to `config.ini`.
+
 ## Installation
 
-The endpoints were installed on Ubuntu 22 and 23 Linux-based machines.
+The endpoints were installed on Ubuntu 22 and 23 Linux-based machines.  The port can be overridden from the `config.ini` file by using the cmd line `--port` option.
 
 ```bash
 conda env create -f llm_environment.yml
