@@ -1,7 +1,6 @@
-# Entropy ML Clients
-<img src="9on_whitex1.png" alt="Entropy ML Clients" width="400"/>
 
-OpenAI compatible clients for distributed and decentralized compute
+<img src="9on_whitex1.png" alt="Entropy ML Clients" width="400"/>
+ Entropy ML Clients.  OpenAI compatible clients for distributed and decentralized compute
 
 ## Latest News
 
