@@ -433,11 +433,11 @@ async def format_prompt_nous(messages):
         if message.role == "system":
             formatted_prompt += f"{message.content}\n\n"
         elif message.role == "user":
-            formatted_prompt += f"USER:\n{message.content}\n"
+            formatted_prompt += f"USER: {message.content}\n"
         elif message.role == "assistant":
-            formatted_prompt += f"ASSISTANT:\n{message.content}\n"
+            formatted_prompt += f"ASSISTANT: {message.content}\n"
     # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "ASSISTANT:\n"
+    formatted_prompt += "ASSISTANT: "
     return formatted_prompt
 
 async def format_prompt_code(messages):
