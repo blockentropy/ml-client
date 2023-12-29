@@ -32,9 +32,9 @@ _Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project]
 
 - `config.ini.sample`: Configuration file that points to model directories, port, upload destination (for image generation).  Rename to `config.ini`.
 
-## Installation
+### Installation
 
-The endpoints were installed on Ubuntu 22 and 23 Linux-based machines.  The port can be overridden from the `config.ini` file by using the cmd line `--port` option.
+The endpoints were installed on Ubuntu 22 and 23 Linux-based machines.  The port can be overridden from the `config.ini` file by using the cmd line `--port` option.  Recommended method of installing miniconda is here, [miniconda](https://docs.conda.io/projects/miniconda/en/latest/)
 
 ```bash
 conda env create -f llm_environment.yml
@@ -42,3 +42,17 @@ conda activate bellm
 
 python3 llm_client.py
 ```
+
+### Troubleshooting
+
+If you have trouble finding CUDA_HOME, or the cuda toolkit when trying to compile flash attention on Ubuntu 22, you can try the following.
+
+```bash
+wget -qO - https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/cuda.gpg
+echo "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64 /" | sudo tee /etc/apt/sources.list.d/cuda.list
+sudo apt update
+sudo apt install cuda-toolkit-11-8
+pip install flash-attn --no-build-isolation
+```
+
+Ubuntu 23 does not require the adding of any repos for the toolkit.
