@@ -70,9 +70,7 @@ def embedding_request(input: Union[str, List[str], List[List[int]]], tempmodel: 
     sentence_embeddings = torch.nn.functional.normalize(sentence_embeddings, p=2, dim=1)
 
     embedding = sentence_embeddings.cpu().squeeze().numpy().tolist()
-    max_tokens = 10
-    completion_tokens = max_tokens
-    prompt_tokens = max_tokens
+    prompt_tokens = sum(len(ids) for ids in encoded_input.input_ids)
 
     response_data = {
         "object": "list",
@@ -86,7 +84,7 @@ def embedding_request(input: Union[str, List[str], List[List[int]]], tempmodel: 
         ],
         "usage": {
             "prompt_tokens": prompt_tokens,
-            "total_tokens": completion_tokens
+            "total_tokens": prompt_tokens,
             }
         }
     return response_data
@@ -100,9 +98,7 @@ def embedding_rerank(input: Union[str, List[str], List[List[str]]], tempmodel: s
     with torch.no_grad():
         scores = model_rerank(**encoded_input, return_dict=True).logits.view(-1, ).float()
     # normalize embeddings
-    max_tokens = 10
-    completion_tokens = max_tokens
-    prompt_tokens = max_tokens
+    prompt_tokens = sum(len(ids) for ids in encoded_input.input_ids)
 
     response_data = {
         "object": "list",
@@ -116,7 +112,7 @@ def embedding_rerank(input: Union[str, List[str], List[List[str]]], tempmodel: s
         ],
         "usage": {
             "prompt_tokens": prompt_tokens,
-            "total_tokens": completion_tokens
+            "total_tokens": prompt_tokens,
             }
         }
     return response_data
