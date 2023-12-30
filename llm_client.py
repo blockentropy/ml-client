@@ -55,7 +55,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Nous-Capybara-34B-GPTQ'
+repo_str = 'Nous-Hermes-2-Yi-34B-GPTQ'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -103,7 +103,7 @@ model = AutoModelForCausalLM.from_pretrained(repo_id,
                                              )
 
 max_input_length = 4096
-if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ' or repo_str == 'Yi-34B-Chat-GPTQ':
+if repo_str == 'Genz-70b-GPTQ' or repo_str == 'Llama-2-70B-chat-GPTQ' or repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ':
     ## Only for Llama Models
     model = exllama_set_max_input_length(model, 4096)
 
@@ -525,7 +525,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_starling(request.messages)
         elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
             prompt = await format_prompt_mixtral(request.messages)
-        elif repo_str == 'Yi-34B-Chat-GPTQ':
+        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ':
             prompt = await format_prompt_yi(request.messages)
         elif repo_str == 'Nous-Capybara-34B-GPTQ':
             prompt = await format_prompt_nous(request.messages)
