@@ -209,7 +209,7 @@ async def streaming_request(prompt: str, max_tokens: int = 1024, tempmodel: str 
             condition.notify_all()
         return
 
-    generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens)
+    generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=max_tokens, temperature=0.01, repetition_penalty=1.1)
     #thread = Thread(target=model.generate, kwargs=generation_kwargs)
     thread = Thread(target=thread_task, args=(model, inputs, generation_kwargs))
     thread.start()
@@ -416,6 +416,17 @@ async def format_prompt(messages):
 
 async def format_prompt_yi(messages):
     formatted_prompt = ""
+    system_message_found = False
+    
+    # Check for a system message first
+    for message in messages:
+        if message.role == "system":
+            system_message_found = True
+            break
+    
+    # If no system message was found, prepend a default one
+    if not system_message_found:
+        formatted_prompt = "system\nYou are a helpful AI assistant.<|im_end|>\n"
     for message in messages:
         if message.role == "system":
             formatted_prompt += f"<|im_start|>system\n{message.content}<|im_end|>\n"
