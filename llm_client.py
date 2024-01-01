@@ -426,7 +426,7 @@ async def format_prompt_yi(messages):
     
     # If no system message was found, prepend a default one
     if not system_message_found:
-        formatted_prompt = "system\nYou are a helpful AI assistant.<|im_end|>\n"
+        formatted_prompt = "<|im_start|>system\nYou are a helpful AI assistant.<|im_end|>\n"
     for message in messages:
         if message.role == "system":
             formatted_prompt += f"<|im_start|>system\n{message.content}<|im_end|>\n"
