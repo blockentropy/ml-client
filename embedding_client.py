@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from transformers import AutoModelForCausalLM, AutoModel, AutoTokenizer, pipeline, TextStreamer, TextIteratorStreamer
+from transformers import AutoModelForCausalLM, AutoModel, AutoTokenizer, pipeline, TextStreamer, TextIteratorStreamer, AutoModelForSequenceClassification
 from threading import Thread, BoundedSemaphore
 
 logging.basicConfig(level=logging.DEBUG)
@@ -23,6 +23,12 @@ logging.basicConfig(level=logging.DEBUG)
 class CompletionRequest(BaseModel):
     model: str
     input: Union[str, List[str], List[List[int]]]
+    encoding_format: Optional[str] = "float"
+    user: Optional[str] = None
+
+class CompletionRequestRerank(BaseModel):
+    model: str
+    input: Union[str, List[str], List[List[str]]]
     encoding_format: Optional[str] = "float"
     user: Optional[str] = None
 
@@ -37,6 +43,11 @@ port = config.getint('settings', 'port')
 model = AutoModel.from_pretrained(repo_id).to("cuda")
 tokenizer = AutoTokenizer.from_pretrained(repo_id)
 model.eval()
+
+repo_id = config.get('bge-reranker-large', 'repo')
+model_rerank = AutoModelForSequenceClassification.from_pretrained(repo_id).to("cuda")
+tokenizer_rerank = AutoTokenizer.from_pretrained(repo_id)
+model_rerank.eval()
 
 print("*** Loaded.. now Inference...:")
 
@@ -59,9 +70,7 @@ def embedding_request(input: Union[str, List[str], List[List[int]]], tempmodel: 
     sentence_embeddings = torch.nn.functional.normalize(sentence_embeddings, p=2, dim=1)
 
     embedding = sentence_embeddings.cpu().squeeze().numpy().tolist()
-    max_tokens = 10
-    completion_tokens = max_tokens
-    prompt_tokens = max_tokens
+    prompt_tokens = sum(len(ids) for ids in encoded_input.input_ids)
 
     response_data = {
         "object": "list",
@@ -75,10 +84,39 @@ def embedding_request(input: Union[str, List[str], List[List[int]]], tempmodel: 
         ],
         "usage": {
             "prompt_tokens": prompt_tokens,
-            "total_tokens": completion_tokens
+            "total_tokens": prompt_tokens,
             }
         }
     return response_data
+
+
+def embedding_rerank(input: Union[str, List[str], List[List[str]]], tempmodel: str = 'BGE'):
+
+    encoded_input = tokenizer_rerank(input, padding=True, truncation=True, return_tensors='pt', max_length=512).to("cuda")
+    print(encoded_input)
+
+    with torch.no_grad():
+        scores = model_rerank(**encoded_input, return_dict=True).logits.view(-1, ).float()
+    # normalize embeddings
+    prompt_tokens = sum(len(ids) for ids in encoded_input.input_ids)
+
+    response_data = {
+        "object": "list",
+        "model": tempmodel,
+        "data": [
+            {
+                "object": "embedding",
+                "index": 0,
+                "scores": scores.cpu().squeeze().numpy().tolist(),
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "total_tokens": prompt_tokens,
+            }
+        }
+    return response_data
+
 
 @app.post('/v1/embeddings')
 async def main(request: CompletionRequest):
@@ -94,6 +132,19 @@ async def main(request: CompletionRequest):
 
     return response_data
 
+@app.post('/v1/embeddings-rerank')
+async def main(request: CompletionRequestRerank):
+
+    response_data = None
+    try:
+        response_data = embedding_rerank(request.input)
+    
+    except Exception as e:
+        # Handle exception...
+        logging.error(f"An error occurred: {e}")
+        return {"error": str(e)}
+
+    return response_data
 
 @app.get('/ping')
 async def get_status():
