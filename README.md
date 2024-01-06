@@ -16,7 +16,7 @@ This repository contains custom endpoints for use in distributed and decentraliz
 - `image_client.py`: Image compatible endpoint. Supported models include SD1.5 diffusion models, and SDXL diffusion models.  Also added support for [IP adapters](https://github.com/tencent-ailab/IP-Adapter) for images/edits endpoint.
 - `embedding_client.py`: Vector embedding compatible endpoint. Supported models include the BGE embedding models.
 
-_Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project](https://github.com/vllm-project/vllm). Differences include support for HuggingFace models, GPTQ quantization, and basic authentication with the Entropy router. They also handle the prompt template of different models within the custom code.
+_Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project](https://github.com/vllm-project/vllm). vLLM has support for multiple clients.  Differences include support for HuggingFace models, GPTQ quantization, and basic authentication with the Entropy router. They also handle the prompt template of different models within the custom code.
 
 ### Custom Research Endpoints
 
@@ -41,6 +41,15 @@ conda env create -f llm_environment.yml
 conda activate bellm
 
 python3 llm_client.py
+```
+
+Flash attention will need to be installed after the fact.  On Ubuntu 23, do the following
+
+```bash
+sudo apt update
+sudo apt install nvidia-cudnn nvidia-cuda-toolkit
+
+pip3 install flash-attn --no-build-isolation
 ```
 
 ### Troubleshooting
