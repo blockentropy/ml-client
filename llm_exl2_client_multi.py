@@ -103,11 +103,16 @@ config = ExLlamaV2Config()
 config.model_dir = repo_id
 config.prepare()
 
+ropescale = 2.6
+max_context = 8192
+config.scale_alpha_value = ropescale
+config.max_seq_len = max_context
+
 model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load([18,18,18,18])
+model.load([16,17,17,17])
 
 tokenizer = ExLlamaV2Tokenizer(config)
 
@@ -174,9 +179,14 @@ def process_prompts():
                 prompt_tokens = ids.shape[-1]
                 new_tokens = prompt_tokens + max_tokens
                 print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                if(new_tokens > 4096):
-                    print("Skipping prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                    continue
+                # Truncate if new_tokens exceed max_context
+                if new_tokens > max_context:
+                    # Calculate how many tokens to truncate
+                    ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
+                    # Update new_tokens after truncation
+                    prompt_tokens = ids.shape[-1]
+                    new_tokens = prompt_tokens + max_tokens
+                    print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
                 if cache_8bit:
                     ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
                 else:
