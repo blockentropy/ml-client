@@ -174,7 +174,7 @@ def process_prompts():
     while True:
         while not prompts.empty() or len(input_ids):
             while len(input_ids) < max_parallel_seqs and not prompts.empty():
-                prompt_id, prompt, max_tokens, stream = prompts.get()
+                prompt_id, prompt, max_tokens, stream, temperature = prompts.get()
                 ids = tokenizer.encode(prompt)
                 prompt_tokens = ids.shape[-1]
                 new_tokens = prompt_tokens + max_tokens
@@ -199,6 +199,7 @@ def process_prompts():
                 prompt_length.append(prompt_tokens)
                 caches.append(ncache)
                 streamer.append(stream)
+                settings_proto.temperature = temperature
                 settings.append(settings_proto.clone())  # Need individual settings per prompt to support Mirostat
                 #print("Prompt added to queue: " + str(prompt_id))
 
@@ -459,7 +460,7 @@ async def mainchat(request: ChatCompletionRequest):
         timeout = 180  # seconds
         start_time = time.time()
         prompt_id = generate_unique_id() # Replace with a function to generate unique IDs
-        prompts.put((prompt_id, prompt, request.max_tokens, request.stream))
+        prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature))
 
         if request.stream:
             #response = StreamingResponse(streaming_request(prompt, request.max_tokens, tempmodel=repo_str, response_format='chat_completion'), media_type="text/event-stream")
