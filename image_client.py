@@ -53,6 +53,9 @@ stable_diffusion.load_ip_adapter(adapter_id, subfolder="sdxl_models", weight_nam
 
 stable_diffusion.to(f"cuda")
 
+#stable_diffusion.enable_vae_slicing()
+#stable_diffusion.enable_sequential_cpu_offload()
+stable_diffusion.enable_model_cpu_offload()
 print("*** Loaded.. now Inference...:")
 
 app = FastAPI(title="StableDiffusion")
