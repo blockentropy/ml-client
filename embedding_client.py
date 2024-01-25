@@ -4,6 +4,7 @@ import os
 import logging
 import time
 import configparser
+import argparse
 from typing import AsyncIterable, List, Generator, Union, Optional
 import torch
 
@@ -33,12 +34,21 @@ class CompletionRequestRerank(BaseModel):
     user: Optional[str] = None
 
 
+parser = argparse.ArgumentParser(description='Run server with specified port.')
+
+# Add argument for port with default type as integer
+parser.add_argument('--port', type=int, help='Port to run the server on.')
+
+# Parse the arguments
+args = parser.parse_args()
+
 config = configparser.ConfigParser()
 config.read('config.ini')
 
 repo_id = config.get('bge-large-en-v1.5', 'repo')
 host = config.get('settings', 'host')
-port = config.getint('settings', 'port')
+
+port = args.port if args.port is not None else config.getint('settings', 'port')
 
 model = AutoModel.from_pretrained(repo_id).to("cuda")
 tokenizer = AutoTokenizer.from_pretrained(repo_id)
