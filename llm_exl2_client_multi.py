@@ -103,7 +103,7 @@ config = ExLlamaV2Config()
 config.model_dir = repo_id
 config.prepare()
 
-ropescale = 2.0
+ropescale = 2.3
 max_context = 8192
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
