@@ -235,6 +235,9 @@ def process_prompts():
             # arbitrary stop condition
             if(len(input_ids)):
                 #inputs = torch.cat([x[:, -1:] for x in input_ids], dim = 0)
+                #logits = model.forward(inputs, caches, input_mask = None).float().cpu()
+                eos = []
+                r = random.random()
                 for i in range(len(input_ids)):
                     if future_tokens[i] is None:
                         draft_sequence_ids = input_ids[i]
@@ -269,10 +272,6 @@ def process_prompts():
                         caches[i].current_seq_len -= num_drafted_tokens + 1
 
 
-                #logits = model.forward(inputs, caches, input_mask = None).float().cpu()
-                eos = []
-                r = random.random()
-                for i in range(len(input_ids)):
                     token, _, _ = ExLlamaV2Sampler.sample(future_logits[i][:, :1, :], settings[i], input_ids[i], r, tokenizer)
                     future_logits[i] = future_logits[i][:, 1:, :]
                     future_tokens[i] = future_tokens[i][:, 1:]
@@ -296,7 +295,7 @@ def process_prompts():
                     if(streamer[i]):
                         ## Generator, yield here..
                         partial_response_data = {
-                            "id": f"chatcmpl-{prompt_id}",
+                            "id": f"chatcmpl-{prompt_ids[i]}",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": repo_str,
@@ -312,7 +311,7 @@ def process_prompts():
                         }
 
                         # Initialize a list for new prompt_id or append to existing one
-                        if prompt_id not in partial_responses:
+                        if prompt_ids[i] not in partial_responses:
                             partial_responses[prompt_ids[i]] = []
                         partial_responses[prompt_ids[i]].append(partial_response_data)
 
