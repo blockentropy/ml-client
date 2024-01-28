@@ -79,7 +79,7 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
 
 repo_str = 'tess-xl-exl2-speculative'
-
+#repo_str = 'test'
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
 # Add argument for port with default type as integer
@@ -105,10 +105,15 @@ config = ExLlamaV2Config()
 config.model_dir = repo_id
 config.prepare()
 
-ropescale = 2.3
-max_context = 8192
+use_dynamic_rope_scaling = True
+dynamic_rope_mult = 1.5
+dynamic_rope_offset = 0.0
+
+ropescale = 1.0
+max_context = 12288
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
+base_model_native_max = 4096
 
 # DRAFT 
 draft_config = ExLlamaV2Config()
@@ -120,6 +125,7 @@ num_speculative_tokens = 5
 speculative_prob_threshold = 0.25
 draft_config.scale_alpha_value = draft_ropescale
 draft_config.max_seq_len = max_context
+draft_model_native_max = 2048
 
 model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
@@ -158,11 +164,16 @@ settings = []
 draft_settings = []
 future_tokens = []
 future_logits = []
+sin_arr = []
+cos_arr = []
+draft_sin_arr = []
+draft_cos_arr = []
 
 # Global variable for storing partial responses
 partial_responses = {}
 
-max_parallel_seqs = 3
+max_parallel_seqs = 2
+num_of_gpus = 4
 
 print("*** Loaded.. now Inference...:")
 
@@ -210,10 +221,90 @@ def process_prompts():
                 if cache_8bit:
                     ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
                 else:
+                    if use_dynamic_rope_scaling:
+                        # Dynamic Rope Scaling
+                        head_dim = model.config.head_dim
+                        model_base = model.config.rotary_embedding_base
+                        draft_head_dim = draft.config.head_dim
+                        draft_model_base = draft.config.rotary_embedding_base
+                        ratio = new_tokens / base_model_native_max
+                        draft_ratio = new_tokens / draft_model_native_max
+                        alpha = 1.0
+                        draft_alpha = 3.0
+                        ropesin = [None] * num_of_gpus
+                        ropecos = [None] * num_of_gpus
+                        draft_ropesin = [None] * num_of_gpus
+                        draft_ropecos = [None] * num_of_gpus
+                        if ratio > 1.0:
+                            alpha = ((0.2500*ratio**2) + (0.3500*ratio) + 0.4000)*dynamic_rope_mult + dynamic_rope_offset
+                            draft_alpha = (-0.13436 + 0.80541 * draft_ratio + 0.28833 * draft_ratio ** 2)*dynamic_rope_mult + dynamic_rope_offset
+                            print("DYNAMIC ROPE SCALE Alpha: " + str(alpha) + "  Ratio: " + str(ratio) + " Draft Alpha: " + str(draft_alpha) + "  Draft Ratio: " + str(draft_ratio))
+
+                        for g in range(num_of_gpus):
+                            base = model_base
+                            draft_base = draft_model_base
+                            try:
+                                tensors = model.get_device_tensors(g)
+                            except IndexError:
+                                tensors = None
+
+                            try:
+                                draft_tensors = draft.get_device_tensors(g)
+                            except IndexError:
+                                draft_tensors = None
+
+                            if tensors is not None:
+                                if alpha != 1.0: base *= alpha ** (model.config.head_dim / (model.config.head_dim - 2))
+
+                                inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device = "cuda:"+str(g)).float() / head_dim))
+                                t = torch.arange(model.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
+
+                                freqs = torch.einsum("i,j->ij", t, inv_freq)
+                                emb = torch.cat((freqs, freqs), dim=-1)
+
+                                ropesin[g] = emb.sin()[None, None, :, :].half()
+                                ropecos[g] = emb.cos()[None, None, :, :].half()
+
+                                #if torch.equal(tensors.sin, ropesin[g]):
+                                #    print("Same")
+                                #else:
+                                #    print("Not same")
+                                #    diff = torch.norm(tensors.sin - ropesin[g], p=2)  # Calculate L2 distance
+                                #    print(f"Different: tensors.sin and ropesin[g]. Difference: {diff.item()}")
+                                #    print("tensors.sin:", tensors.sin[0, 0, :3, :3])
+                                #    print("ropesin[g]:", ropesin[g][0, 0, :3, :3])
+                                #    print("inv_freq:", inv_freq[:3])
+                                #    print("t:", t[:3])
+                                #    print("head_dim:", head_dim)
+                                #    print("base:", base)
+                                #    print("alpha:", alpha) 
+                                tensors.sin = ropesin[g]
+                                tensors.cos = ropecos[g]
+
+                            if draft_tensors is not None:
+                                if draft_alpha != 1.0: draft_base *= draft_alpha ** (draft.config.head_dim / (draft.config.head_dim - 2))
+                                draft_inv_freq = 1.0 / (draft_base ** (torch.arange(0, draft_head_dim, 2, device = "cuda:"+str(g)).float() / draft_head_dim))
+                                draft_t = torch.arange(draft.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
+
+                                draft_freqs = torch.einsum("i,j->ij", draft_t, draft_inv_freq)
+                                draft_emb = torch.cat((draft_freqs, draft_freqs), dim=-1)
+                                draft_ropesin[g] = draft_emb.sin()[None, None, :, :].half()
+                                draft_ropecos[g] = draft_emb.cos()[None, None, :, :].half()
+                                draft_tensors.sin = draft_ropesin[g]
+                                draft_tensors.cos = draft_ropecos[g]
+
+
                     ncache = ExLlamaV2Cache(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
                     ncache_draft = ExLlamaV2Cache(draft, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
 
                 #print("Setting up Cache: " + str(prompt_id))
+                
+                if use_dynamic_rope_scaling:
+                    sin_arr.append(ropesin)
+                    cos_arr.append(ropecos)
+                    draft_sin_arr.append(draft_ropesin)
+                    draft_cos_arr.append(draft_ropecos)
+
                 model.forward(ids[:, :-1], ncache, preprocess_only = True)
                 draft.forward(ids[:1, :-1], ncache_draft, preprocess_only = True)
                 print("Cache setup: " + str(np.shape(ids[:1, :-1])))
@@ -239,6 +330,18 @@ def process_prompts():
                 eos = []
                 r = random.random()
                 for i in range(len(input_ids)):
+                    # if using dynamic rope
+                    if use_dynamic_rope_scaling:
+                        for g in range(num_of_gpus):
+                            if draft_sin_arr[i][g] is not None and draft_cos_arr[i][g] is not None:
+                                draft_tensors = draft.get_device_tensors(g)
+                                draft_tensors.sin = draft_sin_arr[i][g]
+                                draft_tensors.cos = draft_cos_arr[i][g]
+                            if sin_arr[i][g] is not None and cos_arr[i][g] is not None:
+                                tensors = model.get_device_tensors(g)
+                                tensors.sin = sin_arr[i][g]
+                                tensors.cos = cos_arr[i][g]
+
                     if future_tokens[i] is None:
                         draft_sequence_ids = input_ids[i]
                         num_drafted_tokens = 0
@@ -315,7 +418,7 @@ def process_prompts():
                             partial_responses[prompt_ids[i]] = []
                         partial_responses[prompt_ids[i]].append(partial_response_data)
 
-                    if token.item() == tokenizer.eos_token_id or caches[i].current_seq_len == caches[i].max_seq_len:
+                    if token.item() == tokenizer.eos_token_id or caches[i].current_seq_len == caches[i].max_seq_len - num_speculative_tokens:
                         eos.insert(0, i)
                         
                 # Generate and store response
@@ -371,6 +474,11 @@ def process_prompts():
                     draft_settings.pop(i)
                     future_tokens.pop(i)
                     future_logits.pop(i)
+                    if use_dynamic_rope_scaling:
+                        cos_arr.pop(i)
+                        sin_arr.pop(i)
+                        draft_cos_arr.pop(i)
+                        draft_sin_arr.pop(i)
 
         else:
             # Sleep for a short duration when there's no work
