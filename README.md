@@ -1,5 +1,4 @@
-
-<img src="9on_whitex1.png" alt="Entropy ML Clients" width="400"/>
+<img src="1on_whitex4.png" alt="Entropy ML Clients" width="400"/>
  Entropy ML Clients.  OpenAI compatible clients for distributed and decentralized compute
 
 ## Latest News
@@ -13,10 +12,10 @@ This repository contains custom endpoints for use in distributed and decentraliz
 ### OpenAI Compatible Endpoints
 
 - `llm_client.py`: LLM chat compatible endpoint. Supported models include Yi, Starling, Mixtral, Mistral, Phind, Llama, and more.
-- `image_client.py`: Image compatible endpoint. Supported models include SD1.5 diffusion models, and SDXL diffusion models.  Also added support for [IP adapters](https://github.com/tencent-ailab/IP-Adapter) for images/edits endpoint.
+- `image_client.py`: Image compatible endpoint. Supported models include SD1.5 diffusion models, and SDXL diffusion models. Also added support for [IP adapters](https://github.com/tencent-ailab/IP-Adapter) for images/edits endpoint.
 - `embedding_client.py`: Vector embedding compatible endpoint. Supported models include the BGE embedding models.
 
-_Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project](https://github.com/vllm-project/vllm). vLLM has support for multiple clients.  Differences include support for HuggingFace models, GPTQ quantization, and basic authentication with the Entropy router. They also handle the prompt template of different models within the custom code.
+_Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project](https://github.com/vllm-project/vllm). vLLM has support for multiple clients. Differences include support for HuggingFace models, GPTQ quantization, and basic authentication with the Entropy router. They also handle the prompt template of different models within the custom code.
 
 ### Custom Research Endpoints
 
@@ -30,11 +29,11 @@ _Note:_ Our router is compatible with vLLM endpoints as well. See [vLLM project]
 
 ### Config
 
-- `config.ini.sample`: Configuration file that points to model directories, port, upload destination (for image generation).  Rename to `config.ini`.
+- `config.ini.sample`: Configuration file that points to model directories, port, upload destination (for image generation). Rename to `config.ini`.
 
 ### Installation
 
-The endpoints were installed on Ubuntu 22 and 23 Linux-based machines.  The port can be overridden from the `config.ini` file by using the cmd line `--port` option.  Recommended method of installing miniconda is here, [miniconda](https://docs.conda.io/projects/miniconda/en/latest/)
+The endpoints were installed on Ubuntu 22 and 23 Linux-based machines. The port can be overridden from the `config.ini` file by using the cmd line `--port` option. Recommended method of installing miniconda is here, [miniconda](https://docs.conda.io/projects/miniconda/en/latest/)
 
 ```bash
 conda env create -f llm_environment.yml
@@ -43,7 +42,7 @@ conda activate bellm
 python3 llm_client.py
 ```
 
-Flash attention will need to be installed after the fact.  On Ubuntu 23, do the following
+Flash attention will need to be installed after the fact. On Ubuntu 23, do the following
 
 ```bash
 sudo apt update
