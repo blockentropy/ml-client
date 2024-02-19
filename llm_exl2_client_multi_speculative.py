@@ -79,7 +79,8 @@ class ChatCompletionRequest(BaseModel):
     user: Optional[str] = None
 
 repo_str = 'tess-xl-exl2-speculative'
-#repo_str = 'test'
+#repo_str = 'theprofessor-exl2-speculative'
+
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
 # Add argument for port with default type as integer
@@ -140,7 +141,7 @@ tokenizer = ExLlamaV2Tokenizer(config)
 
 # Cache mode
 
-cache_8bit = False
+cache_8bit = True
 
 settings_proto = ExLlamaV2Sampler.Settings()
 settings_proto.temperature = 0
@@ -172,7 +173,7 @@ draft_cos_arr = []
 # Global variable for storing partial responses
 partial_responses = {}
 
-max_parallel_seqs = 2
+max_parallel_seqs = 5 
 num_of_gpus = 4
 
 print("*** Loaded.. now Inference...:")
@@ -218,82 +219,83 @@ def process_prompts():
                     prompt_tokens = ids.shape[-1]
                     new_tokens = prompt_tokens + max_tokens
                     print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
+
+                if use_dynamic_rope_scaling:
+                    # Dynamic Rope Scaling
+                    head_dim = model.config.head_dim
+                    model_base = model.config.rotary_embedding_base
+                    draft_head_dim = draft.config.head_dim
+                    draft_model_base = draft.config.rotary_embedding_base
+                    ratio = new_tokens / base_model_native_max
+                    draft_ratio = new_tokens / draft_model_native_max
+                    alpha = 1.0
+                    draft_alpha = 3.0
+                    ropesin = [None] * num_of_gpus
+                    ropecos = [None] * num_of_gpus
+                    draft_ropesin = [None] * num_of_gpus
+                    draft_ropecos = [None] * num_of_gpus
+                    if ratio > 1.0:
+                        alpha = ((0.2500*ratio**2) + (0.3500*ratio) + 0.4000)*dynamic_rope_mult + dynamic_rope_offset
+                        draft_alpha = (-0.13436 + 0.80541 * draft_ratio + 0.28833 * draft_ratio ** 2)*dynamic_rope_mult + dynamic_rope_offset
+                        print("DYNAMIC ROPE SCALE Alpha: " + str(alpha) + "  Ratio: " + str(ratio) + " Draft Alpha: " + str(draft_alpha) + "  Draft Ratio: " + str(draft_ratio))
+
+                    for g in range(num_of_gpus):
+                        base = model_base
+                        draft_base = draft_model_base
+                        try:
+                            tensors = model.get_device_tensors(g)
+                        except IndexError:
+                            tensors = None
+
+                        try:
+                            draft_tensors = draft.get_device_tensors(g)
+                        except IndexError:
+                            draft_tensors = None
+
+                        if tensors is not None:
+                            if alpha != 1.0: base *= alpha ** (model.config.head_dim / (model.config.head_dim - 2))
+
+                            inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device = "cuda:"+str(g)).float() / head_dim))
+                            t = torch.arange(model.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
+
+                            freqs = torch.einsum("i,j->ij", t, inv_freq)
+                            emb = torch.cat((freqs, freqs), dim=-1)
+
+                            ropesin[g] = emb.sin()[None, None, :, :].half()
+                            ropecos[g] = emb.cos()[None, None, :, :].half()
+
+                            #if torch.equal(tensors.sin, ropesin[g]):
+                            #    print("Same")
+                            #else:
+                            #    print("Not same")
+                            #    diff = torch.norm(tensors.sin - ropesin[g], p=2)  # Calculate L2 distance
+                            #    print(f"Different: tensors.sin and ropesin[g]. Difference: {diff.item()}")
+                            #    print("tensors.sin:", tensors.sin[0, 0, :3, :3])
+                            #    print("ropesin[g]:", ropesin[g][0, 0, :3, :3])
+                            #    print("inv_freq:", inv_freq[:3])
+                            #    print("t:", t[:3])
+                            #    print("head_dim:", head_dim)
+                            #    print("base:", base)
+                            #    print("alpha:", alpha) 
+                            tensors.sin = ropesin[g]
+                            tensors.cos = ropecos[g]
+
+                        if draft_tensors is not None:
+                            if draft_alpha != 1.0: draft_base *= draft_alpha ** (draft.config.head_dim / (draft.config.head_dim - 2))
+                            draft_inv_freq = 1.0 / (draft_base ** (torch.arange(0, draft_head_dim, 2, device = "cuda:"+str(g)).float() / draft_head_dim))
+                            draft_t = torch.arange(draft.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
+
+                            draft_freqs = torch.einsum("i,j->ij", draft_t, draft_inv_freq)
+                            draft_emb = torch.cat((draft_freqs, draft_freqs), dim=-1)
+                            draft_ropesin[g] = draft_emb.sin()[None, None, :, :].half()
+                            draft_ropecos[g] = draft_emb.cos()[None, None, :, :].half()
+                            draft_tensors.sin = draft_ropesin[g]
+                            draft_tensors.cos = draft_ropecos[g]
+
                 if cache_8bit:
                     ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
+                    ncache_draft = ExLlamaV2Cache_8bit(draft, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
                 else:
-                    if use_dynamic_rope_scaling:
-                        # Dynamic Rope Scaling
-                        head_dim = model.config.head_dim
-                        model_base = model.config.rotary_embedding_base
-                        draft_head_dim = draft.config.head_dim
-                        draft_model_base = draft.config.rotary_embedding_base
-                        ratio = new_tokens / base_model_native_max
-                        draft_ratio = new_tokens / draft_model_native_max
-                        alpha = 1.0
-                        draft_alpha = 3.0
-                        ropesin = [None] * num_of_gpus
-                        ropecos = [None] * num_of_gpus
-                        draft_ropesin = [None] * num_of_gpus
-                        draft_ropecos = [None] * num_of_gpus
-                        if ratio > 1.0:
-                            alpha = ((0.2500*ratio**2) + (0.3500*ratio) + 0.4000)*dynamic_rope_mult + dynamic_rope_offset
-                            draft_alpha = (-0.13436 + 0.80541 * draft_ratio + 0.28833 * draft_ratio ** 2)*dynamic_rope_mult + dynamic_rope_offset
-                            print("DYNAMIC ROPE SCALE Alpha: " + str(alpha) + "  Ratio: " + str(ratio) + " Draft Alpha: " + str(draft_alpha) + "  Draft Ratio: " + str(draft_ratio))
-
-                        for g in range(num_of_gpus):
-                            base = model_base
-                            draft_base = draft_model_base
-                            try:
-                                tensors = model.get_device_tensors(g)
-                            except IndexError:
-                                tensors = None
-
-                            try:
-                                draft_tensors = draft.get_device_tensors(g)
-                            except IndexError:
-                                draft_tensors = None
-
-                            if tensors is not None:
-                                if alpha != 1.0: base *= alpha ** (model.config.head_dim / (model.config.head_dim - 2))
-
-                                inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device = "cuda:"+str(g)).float() / head_dim))
-                                t = torch.arange(model.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
-
-                                freqs = torch.einsum("i,j->ij", t, inv_freq)
-                                emb = torch.cat((freqs, freqs), dim=-1)
-
-                                ropesin[g] = emb.sin()[None, None, :, :].half()
-                                ropecos[g] = emb.cos()[None, None, :, :].half()
-
-                                #if torch.equal(tensors.sin, ropesin[g]):
-                                #    print("Same")
-                                #else:
-                                #    print("Not same")
-                                #    diff = torch.norm(tensors.sin - ropesin[g], p=2)  # Calculate L2 distance
-                                #    print(f"Different: tensors.sin and ropesin[g]. Difference: {diff.item()}")
-                                #    print("tensors.sin:", tensors.sin[0, 0, :3, :3])
-                                #    print("ropesin[g]:", ropesin[g][0, 0, :3, :3])
-                                #    print("inv_freq:", inv_freq[:3])
-                                #    print("t:", t[:3])
-                                #    print("head_dim:", head_dim)
-                                #    print("base:", base)
-                                #    print("alpha:", alpha) 
-                                tensors.sin = ropesin[g]
-                                tensors.cos = ropecos[g]
-
-                            if draft_tensors is not None:
-                                if draft_alpha != 1.0: draft_base *= draft_alpha ** (draft.config.head_dim / (draft.config.head_dim - 2))
-                                draft_inv_freq = 1.0 / (draft_base ** (torch.arange(0, draft_head_dim, 2, device = "cuda:"+str(g)).float() / draft_head_dim))
-                                draft_t = torch.arange(draft.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
-
-                                draft_freqs = torch.einsum("i,j->ij", draft_t, draft_inv_freq)
-                                draft_emb = torch.cat((draft_freqs, draft_freqs), dim=-1)
-                                draft_ropesin[g] = draft_emb.sin()[None, None, :, :].half()
-                                draft_ropecos[g] = draft_emb.cos()[None, None, :, :].half()
-                                draft_tensors.sin = draft_ropesin[g]
-                                draft_tensors.cos = draft_ropecos[g]
-
-
                     ncache = ExLlamaV2Cache(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
                     ncache_draft = ExLlamaV2Cache(draft, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
 
@@ -347,7 +349,7 @@ def process_prompts():
                         num_drafted_tokens = 0
                         for k in range(num_speculative_tokens):
                             logits = draft.forward(draft_sequence_ids[:, -1:], draft_caches[i]).float().cpu()
-                            token, prob, _ = ExLlamaV2Sampler.sample(logits, draft_settings[i], draft_sequence_ids, random.random(), tokenizer)
+                            token, _, _, prob, _ = ExLlamaV2Sampler.sample(logits, draft_settings[i], draft_sequence_ids, random.random(), tokenizer)
 
                             if prob < speculative_prob_threshold:
                                 draft_caches[i].current_seq_len -= 1
@@ -375,7 +377,7 @@ def process_prompts():
                         caches[i].current_seq_len -= num_drafted_tokens + 1
 
 
-                    token, _, _ = ExLlamaV2Sampler.sample(future_logits[i][:, :1, :], settings[i], input_ids[i], r, tokenizer)
+                    token, _, _, _, _ = ExLlamaV2Sampler.sample(future_logits[i][:, :1, :], settings[i], input_ids[i], r, tokenizer)
                     future_logits[i] = future_logits[i][:, 1:, :]
                     future_tokens[i] = future_tokens[i][:, 1:]
                     caches[i].current_seq_len += 1
@@ -630,7 +632,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_starling(request.messages)
         elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
             prompt = await format_prompt_mixtral(request.messages)
-        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ':
+        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative':
             prompt = await format_prompt_yi(request.messages)
         elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
             prompt = await format_prompt_nous(request.messages)
