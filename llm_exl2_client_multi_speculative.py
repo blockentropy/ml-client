@@ -670,7 +670,7 @@ async def mainchat(request: ChatCompletionRequest):
 
 @app.get('/ping')
 async def get_status():
-    return {"ping": "pong"}
+    return {"ping": len(input_ids)}
 
 if __name__ == "__main__":
     import uvicorn
