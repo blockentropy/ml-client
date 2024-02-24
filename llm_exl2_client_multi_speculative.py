@@ -219,7 +219,7 @@ def process_prompts():
                     prompt_tokens = ids.shape[-1]
                     new_tokens = prompt_tokens + max_tokens
                     print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-
+                prompt_length.append(prompt_tokens)
                 if use_dynamic_rope_scaling:
                     # Dynamic Rope Scaling
                     head_dim = model.config.head_dim
@@ -312,7 +312,6 @@ def process_prompts():
                 print("Cache setup: " + str(np.shape(ids[:1, :-1])))
                 input_ids.append(ids)
                 prompt_ids.append(prompt_id)
-                prompt_length.append(prompt_tokens)
                 caches.append(ncache)
                 draft_caches.append(ncache_draft)
                 streamer.append(stream)
@@ -670,7 +669,7 @@ async def mainchat(request: ChatCompletionRequest):
 
 @app.get('/ping')
 async def get_status():
-    return {"ping": len(input_ids)}
+    return {"ping": sum(prompt_length)}
 
 if __name__ == "__main__":
     import uvicorn
