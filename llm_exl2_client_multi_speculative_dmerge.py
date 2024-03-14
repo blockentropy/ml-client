@@ -83,8 +83,9 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'tinyllama-exl2-speculative'
+repo_str = 'Yi-34B-Chat'
 #repo_str = 'theprofessor-exl2-speculative'
+#repo_str = 'tinyllama-exl2-speculative'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -116,7 +117,7 @@ dynamic_rope_mult = 1.5
 dynamic_rope_offset = 0.0
 
 ropescale = 1.0
-max_context = 12288
+max_context = 8192
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 base_model_native_max = 4096
@@ -137,7 +138,7 @@ model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load([9,9])
+model.load()
 
 draft = ExLlamaV2(draft_config)
 print("Loading draft model: " + specrepo_id)
@@ -179,17 +180,135 @@ draft_cos_arr = []
 partial_responses = {}
 
 max_parallel_seqs = 5 
-num_of_gpus = 2
+num_of_gpus = 1
 
-dynamic_merge = True
+dynamic_merge = True 
 ## Dynamic Merge Slicing
 if dynamic_merge == True:
     #layer_arrangement = list(range(0,20)) + list(range(10,30))+ list(range(20,40)) + list(range(30,50))+list(range(40,60))
     #layer_arrangement = list(range(0,6)) + list(range(2,8))+ list(range(4,10)) + list(range(6,12))+list(range(8,14)) +\
     #                    list(range(10,16)) + list(range(12,18))+ list(range(14,20)) + list(range(16,22))
-    layer_arrangement = [0,1] + [i for i in range(2, 20) for _ in range(5)] + [ 20, 21]
+    #layer_arrangement = [0,1] + [i for i in range(2, 20) for _ in range(5)] + [ 20, 21]
     #layer_arrangement = list(range(0,22))
     #layer_arrangement = list(range(0,94))
+
+
+    ### STACKED LAYERS
+    layer_arrangement = []
+    # layer_arrangement.extend(range(0, 4))
+
+    # layer_ranges = [
+    #     (2, 8),  # adjusted for Python's zero-indexing and end-exclusive range.
+    #     (3, 9),
+    #     (4, 10),
+    #     (5, 11),
+    #     (6, 12),
+    #     (7, 13),
+    #     (8, 14),
+    #     (9, 15),
+    #     (10, 16),
+    #     (11, 17),
+    #     (12, 18),
+    #     (13, 19),
+    #     (14, 20),
+    #     (15, 21),
+    #     (16, 22),
+    # ]
+    # layer_arrangement.extend(range(0, 6))
+    # layer_ranges = [
+    #     (4, 12),  # only double
+    #     (8, 16),
+    #     (12, 20),
+    #     (16, 22),
+    # ]
+
+
+
+    # Yi-34B-Chat
+    layer_arrangement.extend(range(0, 20))
+    layer_ranges = [
+        (10, 30),  # adjusted for Python's zero-indexing and end-exclusive range.
+        (20, 40),
+        (30, 50),
+        (40, 60),
+    ]
+
+
+    for start, end in layer_ranges:
+        layer_arrangement.extend(range(start, end))
+
+    # REPITITION LAYERS
+    # layer_ranges = [
+    #    (0, 3, 1),
+    #    (3, 4, 2),  # 94
+    #     (4, 5, 2),
+    #     (5, 6, 2),  
+    #     (6, 7, 4),
+    #     (7, 8, 4),
+    #     (8, 9, 8),
+    #     (9, 10, 8),
+    #     (10, 11, 16),
+    #     (11, 12, 16),
+    #     (12, 13, 8),
+    #     (13, 14, 8),
+    #     (14, 15, 4),
+    #     (15, 16, 4),
+    #     (16, 17, 2),
+    #     (17, 18, 2),
+    #     (18, 19, 2),
+    #     (19, 22, 1),
+    # ]
+
+    # layer_ranges = [
+    #    (0, 3, 1),
+    #    (3, 4, 2),  # 186
+    #     (4, 5, 4),
+    #     (5, 6, 4),  
+    #     (6, 7, 8),
+    #     (7, 8, 8),
+    #     (8, 9, 16),
+    #     (9, 10, 16),
+    #     (10, 11, 32),
+    #     (11, 12, 32),
+    #     (12, 13, 16),
+    #     (13, 14, 16),
+    #     (14, 15, 8),
+    #     (15, 16, 8),
+    #     (16, 17, 4),
+    #     (17, 18, 4),
+    #     (18, 19, 2),
+    #     (19, 22, 1),
+    # ]
+
+    # layer_ranges = [ #354
+    #     (0, 3, 1),
+    #     (3, 4, 2),
+    #     (4, 5, 4),
+    #     (5, 6, 8),
+    #     (6, 7, 16),
+    #     (7, 8, 16),
+    #     (8, 9, 32),
+    #     (9, 10, 32),
+    #     (10, 11, 64),
+    #     (11, 12, 64),
+    #     (12, 13, 32),
+    #     (13, 14, 32),
+    #     (14, 15, 16),
+    #     (15, 16, 16),
+    #     (16, 17, 8),
+    #     (17, 18, 4),
+    #     (18, 19, 2),
+    #     (19, 22, 1),
+    # ]
+
+
+    # layer_arrangement = []
+
+    # for start, end, repetition in layer_ranges:
+    #     for i in range(start, end):
+    #         layer_arrangement.extend([i] * repetition)  # Extend the list by repeating each number 'repetition' times.
+
+
     # modules arangement: [embedding, [...layers], rms-norm, head]
     # where each layer is [attention, mlp]
     old_modules = model.modules
@@ -320,12 +439,15 @@ if dynamic_merge == True:
         print(key)
     print("Num of hidden layers:" +str(model.config.num_hidden_layers))
 # Load LoRA
-lora_directory = "../exllamav2/openhermes_out/checkpoint-12500/"
-#lora_directory = "../exllamav2/trained_base_model_tinyllama.base/"
+lora_directory = "../exllamav2/checkpoint-100/"
+#lora_directory = "../exllamav2/unsloth/unsloth_outputs_expand/checkpoint-7000/"
+#lora_directory = "../exllamav2/unsloth/unsloth_outputs_expand8x/checkpoint-12000/"
+#lora_directory = "../exllamav2/unsloth/unsloth_outputs_yi_lima/checkpoint-8000/"
+#lora_directory = "../exllamav2/unsloth/trained_unsloth_tinyllama_lima/" 
+#lora_directory = "../exllamav2/openhermes_out_stacked_94layers/checkpoint-11000/"
+#lora_directory = "../exllamav2/openhermes_out/checkpoint-6500/"
 lora = ExLlamaV2Lora.from_directory(model, lora_directory)
 #lora = None
-for key in model.config.tensor_file_map.keys():
-    print(key)
 
 
 
@@ -551,6 +673,11 @@ def process_prompts():
                     reason = None
                     if(streamer[i]):
                         ## Generator, yield here..
+                        outcontent = diff
+                        if diff == """<|im_end|>""":
+                            outcontent = ""
+                            reason = "stop"
+
                         partial_response_data = {
                             "id": f"chatcmpl-{prompt_ids[i]}",
                             "object": "chat.completion.chunk",
@@ -560,7 +687,7 @@ def process_prompts():
                                 {
                                     "index": 0,
                                     "delta": {
-                                        "content": diff
+                                        "content": outcontent
                                     },
                                     "finish_reason": reason
                                 }
@@ -572,7 +699,7 @@ def process_prompts():
                             partial_responses[prompt_ids[i]] = []
                         partial_responses[prompt_ids[i]].append(partial_response_data)
 
-                    if token.item() == tokenizer.eos_token_id or caches[i].current_seq_len == caches[i].max_seq_len - num_speculative_tokens:
+                    if token.item() == tokenizer.eos_token_id or diff == """<|im_end|>""" or caches[i].current_seq_len == caches[i].max_seq_len - num_speculative_tokens:
                         eos.insert(0, i)
                         
                 # Generate and store response
@@ -784,7 +911,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_starling(request.messages)
         elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
             prompt = await format_prompt_mixtral(request.messages)
-        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative':
+        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative' or repo_str == 'Yi-34B-Chat':
             prompt = await format_prompt_yi(request.messages)
         elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
             prompt = await format_prompt_nous(request.messages)
