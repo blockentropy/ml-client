@@ -12,6 +12,8 @@ from typing import AsyncIterable, List, Generator, Union, Optional
 
 import requests
 import sseclient
+import subprocess
+import re
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -132,7 +134,7 @@ model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load([15,17,17,17])
+model.load([16,18,18,18])
 
 draft = ExLlamaV2(draft_config)
 print("Loading draft model: " + specrepo_id)
@@ -670,6 +672,30 @@ async def mainchat(request: ChatCompletionRequest):
 @app.get('/ping')
 async def get_status():
     return {"ping": sum(prompt_length)}
+
+@app.get("/nvidia-smi")
+async def get_nvidia_smi():
+    # Execute the nvidia-smi command
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader"],
+        capture_output=True, text=True
+    )
+    nvidia_smi_output = result.stdout.strip()  # Remove any extra whitespace
+    # Split the output by lines and then by commas
+    gpu_data = []
+    for line in nvidia_smi_output.split("\n"):
+        utilization, memory_used, memory_total = line.split(", ")
+        # Strip the '%' and 'MiB' and convert to appropriate types
+        utilization = float(utilization.strip(' %'))
+        memory_used = int(memory_used.strip(' MiB'))
+        memory_total = int(memory_total.strip(' MiB'))
+        gpu_data.append({
+           "utilization": utilization,
+           "memory_used": memory_used,
+           "memory_total": memory_total
+        })
+    return gpu_data
+
 
 if __name__ == "__main__":
     import uvicorn
