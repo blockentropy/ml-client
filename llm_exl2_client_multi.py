@@ -12,6 +12,8 @@ from typing import AsyncIterable, List, Generator, Union, Optional
 
 import requests
 import sseclient
+import subprocess
+import re
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +23,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, TextStre
 from threading import Thread
 from auto_gptq import exllama_set_max_input_length
 import queue
+import numpy as np
 
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,7 +80,8 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'tess-xl-exl2'
+repo_str = 'dbrx-instruct-exl2'
+#repo_str = 'theprofessor-exl2-speculative'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -103,22 +107,27 @@ config = ExLlamaV2Config()
 config.model_dir = repo_id
 config.prepare()
 
-ropescale = 2.3
-max_context = 8192
+use_dynamic_rope_scaling = False 
+dynamic_rope_mult = 1.5
+dynamic_rope_offset = 0.0
+
+ropescale = 1.0
+max_context = 12288
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
+base_model_native_max = 4096
 
 model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load([16,17,17,17])
+model.load([17,19,19,19])
 
 tokenizer = ExLlamaV2Tokenizer(config)
 
 # Cache mode
 
-cache_8bit = False
+cache_8bit = True
 
 settings_proto = ExLlamaV2Sampler.Settings()
 settings_proto.temperature = 0
@@ -138,11 +147,16 @@ prompt_ids = []
 streamer = []
 caches = []
 settings = []
+future_tokens = []
+future_logits = []
+sin_arr = []
+cos_arr = []
 
 # Global variable for storing partial responses
 partial_responses = {}
 
-max_parallel_seqs = 3
+max_parallel_seqs = 3 
+num_of_gpus = 4
 
 print("*** Loaded.. now Inference...:")
 
@@ -187,32 +201,84 @@ def process_prompts():
                     prompt_tokens = ids.shape[-1]
                     new_tokens = prompt_tokens + max_tokens
                     print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
+                prompt_length.append(prompt_tokens)
+                if use_dynamic_rope_scaling:
+                    # Dynamic Rope Scaling
+                    head_dim = model.config.head_dim
+                    model_base = model.config.rotary_embedding_base
+                    ratio = new_tokens / base_model_native_max
+                    alpha = 1.0
+                    ropesin = [None] * num_of_gpus
+                    ropecos = [None] * num_of_gpus
+                    if ratio > 1.0:
+                        alpha = ((0.2500*ratio**2) + (0.3500*ratio) + 0.4000)*dynamic_rope_mult + dynamic_rope_offset
+                        print("DYNAMIC ROPE SCALE Alpha: " + str(alpha) + "  Ratio: " + str(ratio))
+
+                    for g in range(num_of_gpus):
+                        base = model_base
+                        try:
+                            tensors = model.get_device_tensors(g)
+                        except IndexError:
+                            tensors = None
+
+                        if tensors is not None:
+                            if alpha != 1.0: base *= alpha ** (model.config.head_dim / (model.config.head_dim - 2))
+
+                            inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device = "cuda:"+str(g)).float() / head_dim))
+                            t = torch.arange(model.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
+
+                            freqs = torch.einsum("i,j->ij", t, inv_freq)
+                            emb = torch.cat((freqs, freqs), dim=-1)
+
+                            ropesin[g] = emb.sin()[None, None, :, :].half()
+                            ropecos[g] = emb.cos()[None, None, :, :].half()
+
+                            tensors.sin = ropesin[g]
+                            tensors.cos = ropecos[g]
+
                 if cache_8bit:
                     ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
                 else:
                     ncache = ExLlamaV2Cache(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
 
                 #print("Setting up Cache: " + str(prompt_id))
+                
+                if use_dynamic_rope_scaling:
+                    sin_arr.append(ropesin)
+                    cos_arr.append(ropecos)
+
                 model.forward(ids[:, :-1], ncache, preprocess_only = True)
+                print("Cache setup: " + str(np.shape(ids[:1, :-1])))
                 input_ids.append(ids)
                 prompt_ids.append(prompt_id)
-                prompt_length.append(prompt_tokens)
                 caches.append(ncache)
                 streamer.append(stream)
                 settings_proto.temperature = temperature
                 settings.append(settings_proto.clone())  # Need individual settings per prompt to support Mirostat
+                future_tokens.append(None)
+                future_logits.append(None)
                 #print("Prompt added to queue: " + str(prompt_id))
 
             # Create a batch tensor of the last token in each active sequence, forward through the model using the list of
             # active caches rather than a single, batched cache. Then sample for each token indidividually with some
             # arbitrary stop condition
             if(len(input_ids)):
-                inputs = torch.cat([x[:, -1:] for x in input_ids], dim = 0)
-                logits = model.forward(inputs, caches, input_mask = None).float().cpu()
+                #inputs = torch.cat([x[:, -1:] for x in input_ids], dim = 0)
+                #logits = model.forward(inputs, caches, input_mask = None).float().cpu()
                 eos = []
                 r = random.random()
                 for i in range(len(input_ids)):
-                    token, _, _ = ExLlamaV2Sampler.sample(logits[i:i+1, :, :], settings[i], input_ids[i], r, tokenizer)
+                    # if using dynamic rope
+                    if use_dynamic_rope_scaling:
+                        for g in range(num_of_gpus):
+                            if sin_arr[i][g] is not None and cos_arr[i][g] is not None:
+                                tensors = model.get_device_tensors(g)
+                                tensors.sin = sin_arr[i][g]
+                                tensors.cos = cos_arr[i][g]
+
+                    logits = model.forward(input_ids[i][:, -1:], caches[i], input_mask = None ).float().cpu()
+                    token, _, _, _, _ = ExLlamaV2Sampler.sample(logits[:, :1, :], settings[i], input_ids[i], r, tokenizer)
+
                     input_ids[i] = torch.cat([input_ids[i], token], dim = 1)
 
                     new_text = tokenizer.decode(input_ids[i][:, -2:-1], decode_special_tokens=False)[0]
@@ -223,8 +289,12 @@ def process_prompts():
                     reason = None
                     if(streamer[i]):
                         ## Generator, yield here..
+                        outcontent = diff
+                        if diff == """<|im_end|>""":
+                            outcontent = ""
+                            reason = "stop"
                         partial_response_data = {
-                            "id": f"chatcmpl-{prompt_id}",
+                            "id": f"chatcmpl-{prompt_ids[i]}",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": repo_str,
@@ -232,7 +302,7 @@ def process_prompts():
                                 {
                                     "index": 0,
                                     "delta": {
-                                        "content": diff
+                                        "content": outcontent
                                     },
                                     "finish_reason": reason
                                 }
@@ -240,11 +310,11 @@ def process_prompts():
                         }
 
                         # Initialize a list for new prompt_id or append to existing one
-                        if prompt_id not in partial_responses:
+                        if prompt_ids[i] not in partial_responses:
                             partial_responses[prompt_ids[i]] = []
                         partial_responses[prompt_ids[i]].append(partial_response_data)
 
-                    if token.item() == tokenizer.eos_token_id or caches[i].current_seq_len == caches[i].max_seq_len:
+                    if token.item() == tokenizer.eos_token_id or diff == """<|im_end|>""" or caches[i].current_seq_len == caches[i].max_seq_len:
                         eos.insert(0, i)
                         
                 # Generate and store response
@@ -296,6 +366,9 @@ def process_prompts():
                     settings.pop(i)
                     prompt_length.pop(i)
                     streamer.pop(i)
+                    if use_dynamic_rope_scaling:
+                        cos_arr.pop(i)
+                        sin_arr.pop(i)
 
         else:
             # Sleep for a short duration when there's no work
@@ -447,11 +520,11 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_starling(request.messages)
         elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
             prompt = await format_prompt_mixtral(request.messages)
-        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ':
+        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative' or repo_str == 'dbrx-instruct-exl2':
             prompt = await format_prompt_yi(request.messages)
         elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
             prompt = await format_prompt_nous(request.messages)
-        elif repo_str == 'tess-xl-exl2':
+        elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
             prompt = await format_prompt_tess(request.messages)
         else:
             prompt = await format_prompt(request.messages)
@@ -485,7 +558,31 @@ async def mainchat(request: ChatCompletionRequest):
 
 @app.get('/ping')
 async def get_status():
-    return {"ping": "pong"}
+    return {"ping": sum(prompt_length)}
+
+@app.get("/nvidia-smi")
+async def get_nvidia_smi():
+    # Execute the nvidia-smi command
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader"],
+        capture_output=True, text=True
+    )
+    nvidia_smi_output = result.stdout.strip()  # Remove any extra whitespace
+    # Split the output by lines and then by commas
+    gpu_data = []
+    for line in nvidia_smi_output.split("\n"):
+        utilization, memory_used, memory_total = line.split(", ")
+        # Strip the '%' and 'MiB' and convert to appropriate types
+        utilization = float(utilization.strip(' %'))
+        memory_used = int(memory_used.strip(' MiB'))
+        memory_total = int(memory_total.strip(' MiB'))
+        gpu_data.append({
+           "utilization": utilization,
+           "memory_used": memory_used,
+           "memory_total": memory_total
+        })
+    return gpu_data
+
 
 if __name__ == "__main__":
     import uvicorn
