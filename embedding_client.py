@@ -156,6 +156,29 @@ async def main(request: CompletionRequestRerank):
 
     return response_data
 
+@app.get("/nvidia-smi")
+async def get_nvidia_smi():
+    # Execute the nvidia-smi command
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader"],
+        capture_output=True, text=True
+    )
+    nvidia_smi_output = result.stdout.strip()  # Remove any extra whitespace
+    # Split the output by lines and then by commas
+    gpu_data = []
+    for line in nvidia_smi_output.split("\n"):
+        utilization, memory_used, memory_total = line.split(", ")
+        # Strip the '%' and 'MiB' and convert to appropriate types
+        utilization = float(utilization.strip(' %'))
+        memory_used = int(memory_used.strip(' MiB'))
+        memory_total = int(memory_total.strip(' MiB'))
+        gpu_data.append({
+           "utilization": utilization,
+           "memory_used": memory_used,
+           "memory_total": memory_total
+        })
+    return gpu_data
+
 @app.get('/ping')
 async def get_status():
     return {"ping": "pong"}
