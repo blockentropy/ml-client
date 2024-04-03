@@ -11,6 +11,7 @@ import torch
 import requests
 import sseclient
 import tiktoken
+import subprocess
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
