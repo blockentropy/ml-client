@@ -80,7 +80,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'dbrx-instruct-exl2'
+repo_str = 'commandr-exl2'
 #repo_str = 'theprofessor-exl2-speculative'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
@@ -283,7 +283,13 @@ def process_prompts():
 
                     new_text = tokenizer.decode(input_ids[i][:, -2:-1], decode_special_tokens=False)[0]
                     new_text2 = tokenizer.decode(input_ids[i][:, -2:], decode_special_tokens=False)[0]
-                    diff = new_text2[len(new_text):]
+                    if '�' in new_text:
+                        diff = new_text2
+                    else:
+                        diff = new_text2[len(new_text):]
+
+                    if '�' in diff:
+                        diff = ""
 
                     #print(diff)
                     reason = None
@@ -507,6 +513,21 @@ async def format_prompt_mixtral(messages):
             formatted_prompt += f" {message.content}</s> "  # Prep for user follow-up
     return formatted_prompt
 
+async def format_prompt_commandr(messages):
+    formatted_prompt = ""
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+        elif message.role == "user":
+            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+        elif message.role == "assistant":
+            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>"
+    return formatted_prompt
+
+
+
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
 
@@ -526,6 +547,8 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_nous(request.messages)
         elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
             prompt = await format_prompt_tess(request.messages)
+        elif repo_str == 'commandr-exl2':
+            prompt = await format_prompt_commandr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         print(prompt)
