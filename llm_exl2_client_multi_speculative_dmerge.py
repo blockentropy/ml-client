@@ -12,6 +12,7 @@ from typing import AsyncIterable, List, Generator, Union, Optional
 
 import requests
 import sseclient
+import subprocess
 
 from copy import copy, deepcopy
 from fastapi import FastAPI
@@ -83,9 +84,10 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'Yi-34B-Chat'
+#repo_str = 'Yi-34B-Chat'
 #repo_str = 'theprofessor-exl2-speculative'
-#repo_str = 'tinyllama-exl2-speculative'
+#repo_str = 'venus-exl2-speculative'
+repo_str = 'miqu-exl2-speculative'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
@@ -138,7 +140,7 @@ model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load()
+model.load([19,9,10,10])
 
 draft = ExLlamaV2(draft_config)
 print("Loading draft model: " + specrepo_id)
@@ -179,8 +181,8 @@ draft_cos_arr = []
 # Global variable for storing partial responses
 partial_responses = {}
 
-max_parallel_seqs = 5 
-num_of_gpus = 1
+max_parallel_seqs = 3 
+num_of_gpus = 4
 
 dynamic_merge = True 
 ## Dynamic Merge Slicing
@@ -224,13 +226,15 @@ if dynamic_merge == True:
 
 
 
-    # Yi-34B-Chat
+    #Venus 120b 
     layer_arrangement.extend(range(0, 20))
     layer_ranges = [
         (10, 30),  # adjusted for Python's zero-indexing and end-exclusive range.
         (20, 40),
         (30, 50),
         (40, 60),
+        (50, 70),
+        (60, 80),
     ]
 
 
@@ -422,7 +426,7 @@ if dynamic_merge == True:
                                         device_tensors.get_scratch_slice(model_self.temp_b_size()),
                                         device_tensors.get_scratch_slice(model_self.temp_dq_size()),
                                         model.config.max_input_len * model.config.max_batch_size,
-                                        model.config.architecture == "Gemma")
+                                        model.config.arch.mlp_act_func == "gelu")
 
     model.modules += old_modules[-2:]
     model.head_layer_idx = len(model.modules) -1
@@ -439,15 +443,15 @@ if dynamic_merge == True:
         print(key)
     print("Num of hidden layers:" +str(model.config.num_hidden_layers))
 # Load LoRA
-lora_directory = "../exllamav2/checkpoint-100/"
+#lora_directory = "../exllamav2/checkpoint-100/"
 #lora_directory = "../exllamav2/unsloth/unsloth_outputs_expand/checkpoint-7000/"
 #lora_directory = "../exllamav2/unsloth/unsloth_outputs_expand8x/checkpoint-12000/"
 #lora_directory = "../exllamav2/unsloth/unsloth_outputs_yi_lima/checkpoint-8000/"
 #lora_directory = "../exllamav2/unsloth/trained_unsloth_tinyllama_lima/" 
 #lora_directory = "../exllamav2/openhermes_out_stacked_94layers/checkpoint-11000/"
 #lora_directory = "../exllamav2/openhermes_out/checkpoint-6500/"
-lora = ExLlamaV2Lora.from_directory(model, lora_directory)
-#lora = None
+#lora = ExLlamaV2Lora.from_directory(model, lora_directory)
+lora = None
 
 
 
@@ -667,7 +671,13 @@ def process_prompts():
 
                     new_text = tokenizer.decode(input_ids[i][:, -2:-1], decode_special_tokens=False)[0]
                     new_text2 = tokenizer.decode(input_ids[i][:, -2:], decode_special_tokens=False)[0]
-                    diff = new_text2[len(new_text):]
+                    if '�' in new_text:
+                        diff = new_text2
+                    else:
+                        diff = new_text2[len(new_text):]
+
+                    if '�' in diff:
+                        diff = ""
 
                     #print(diff)
                     reason = None
@@ -909,13 +919,13 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_zephyr(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
-        elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+        elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ' or repo_str == 'miqu-exl2-speculative':
             prompt = await format_prompt_mixtral(request.messages)
         elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative' or repo_str == 'Yi-34B-Chat':
             prompt = await format_prompt_yi(request.messages)
         elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
             prompt = await format_prompt_nous(request.messages)
-        elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
+        elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative' or repo_str == 'venus-exl2-speculative':
             prompt = await format_prompt_tess(request.messages)
         elif repo_str == 'tinyllama-exl2-speculative':
             prompt = await format_prompt_zephyr(request.messages)
@@ -952,6 +962,29 @@ async def mainchat(request: ChatCompletionRequest):
 @app.get('/ping')
 async def get_status():
     return {"ping": sum(prompt_length)}
+
+@app.get("/nvidia-smi")
+async def get_nvidia_smi():
+    # Execute the nvidia-smi command
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader"],
+        capture_output=True, text=True
+    )
+    nvidia_smi_output = result.stdout.strip()  # Remove any extra whitespace
+    # Split the output by lines and then by commas
+    gpu_data = []
+    for line in nvidia_smi_output.split("\n"):
+        utilization, memory_used, memory_total = line.split(", ")
+        # Strip the '%' and 'MiB' and convert to appropriate types
+        utilization = float(utilization.strip(' %'))
+        memory_used = int(memory_used.strip(' MiB'))
+        memory_total = int(memory_total.strip(' MiB'))
+        gpu_data.append({
+           "utilization": utilization,
+           "memory_used": memory_used,
+           "memory_total": memory_total
+        })
+    return gpu_data
 
 if __name__ == "__main__":
     import uvicorn
