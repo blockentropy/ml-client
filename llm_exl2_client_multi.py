@@ -513,11 +513,24 @@ async def format_prompt_mixtral(messages):
             formatted_prompt += f" {message.content}</s> "  # Prep for user follow-up
     return formatted_prompt
 
+
 async def format_prompt_commandr(messages):
     formatted_prompt = ""
+    system_message_found = False
+    
+    # Check for a system message first
     for message in messages:
         if message.role == "system":
-            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+            system_message_found = True
+            break
+    
+    # If no system message was found, prepend a default one
+    if not system_message_found:
+        formatted_prompt += f"<BOS_TOKEN><|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+ 
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"<BOS_TOKEN><|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
         elif message.role == "user":
             formatted_prompt += f"<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
         elif message.role == "assistant":
@@ -525,7 +538,6 @@ async def format_prompt_commandr(messages):
     # Add the final "### Assistant:\n" to prompt for the next response
     formatted_prompt += "<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>"
     return formatted_prompt
-
 
 
 @app.post('/v1/chat/completions')
@@ -547,7 +559,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_nous(request.messages)
         elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
             prompt = await format_prompt_tess(request.messages)
-        elif repo_str == 'commandr-exl2':
+        elif repo_str == 'commandr-exl2' or repo_str == 'commandr-exl2-speculative':
             prompt = await format_prompt_commandr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
