@@ -80,7 +80,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
 
-repo_str = 'tess-xl-exl2-speculative'
+repo_str = 'commandr-exl2-speculative'
 #repo_str = 'theprofessor-exl2-speculative'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
@@ -108,12 +108,12 @@ config = ExLlamaV2Config()
 config.model_dir = repo_id
 config.prepare()
 
-use_dynamic_rope_scaling = True
+use_dynamic_rope_scaling = False 
 dynamic_rope_mult = 1.5
 dynamic_rope_offset = 0.0
 
 ropescale = 1.0
-max_context = 12288
+max_context = 8096
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 base_model_native_max = 4096
@@ -123,18 +123,18 @@ draft_config = ExLlamaV2Config()
 draft_config.model_dir = specrepo_id
 draft_config.prepare()
 
-draft_ropescale = 3.0
-num_speculative_tokens = 5
-speculative_prob_threshold = 0.25
+draft_ropescale = 1.0
+num_speculative_tokens = 3
+speculative_prob_threshold = 0.15
 draft_config.scale_alpha_value = draft_ropescale
 draft_config.max_seq_len = max_context
-draft_model_native_max = 2048
+draft_model_native_max = 8048
 
 model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load([16,18,18,18])
+model.load([12,20,20,20])
 
 draft = ExLlamaV2(draft_config)
 print("Loading draft model: " + specrepo_id)
@@ -394,7 +394,13 @@ def process_prompts():
 
                     new_text = tokenizer.decode(input_ids[i][:, -2:-1], decode_special_tokens=False)[0]
                     new_text2 = tokenizer.decode(input_ids[i][:, -2:], decode_special_tokens=False)[0]
-                    diff = new_text2[len(new_text):]
+                    if '�' in new_text:
+                        diff = new_text2
+                    else:
+                        diff = new_text2[len(new_text):]
+
+                    if '�' in diff:
+                        diff = ""
 
                     #print(diff)
                     reason = None
@@ -620,6 +626,33 @@ async def format_prompt_mixtral(messages):
             formatted_prompt += f" {message.content}</s> "  # Prep for user follow-up
     return formatted_prompt
 
+async def format_prompt_commandr(messages):
+    formatted_prompt = ""
+    system_message_found = False
+    
+    # Check for a system message first
+    for message in messages:
+        if message.role == "system":
+            system_message_found = True
+            break
+    
+    # If no system message was found, prepend a default one
+    if not system_message_found:
+        formatted_prompt += f"<BOS_TOKEN><|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+ 
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"<BOS_TOKEN><|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+        elif message.role == "user":
+            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+        elif message.role == "assistant":
+            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>"
+    return formatted_prompt
+
+
+
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
 
@@ -639,6 +672,8 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_nous(request.messages)
         elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
             prompt = await format_prompt_tess(request.messages)
+        elif repo_str == 'commandr-exl2' or repo_str == 'commandr-exl2-speculative':
+            prompt = await format_prompt_commandr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         print(prompt)
