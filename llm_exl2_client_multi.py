@@ -26,6 +26,7 @@ import queue
 import numpy as np
 
 import sys, os
+import outlines
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exllamav2 import(
@@ -87,6 +88,7 @@ parser = argparse.ArgumentParser(description='Run server with specified port.')
 
 # Add argument for port with default type as integer
 parser.add_argument('--port', type=int, help='Port to run the server on.')
+parser.add_argument('--use_outlines', action='store_true', help='Use outlines.')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -117,11 +119,29 @@ config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 base_model_native_max = 4096
 
-model = ExLlamaV2(config)
+if args.use_outlines:
+    model = outlines.models.exl2(
+        config.model_dir,
+        "cuda",
+        max_seq_len = config.max_seq_len,
+        scale_pos_emb = config.scale_pos_emb,
+        scale_alpha_value = config.scale_alpha_value,
+        no_flash_attn = config.no_flash_attn,
+        num_experts_per_token = config.num_experts_per_token,
+        cache_8bit = True,
+        cache_q4 = False,
+        tokenizer_kwargs = {},
+        gpu_split = "17,19,19,19", # we might be able to make this auto
+        low_mem = None,
+        verbose = None
+    )
+else:
+    model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load([17,19,19,19])
+if not args.use_outlines:
+    model.load([17,19,19,19])
 
 tokenizer = ExLlamaV2Tokenizer(config)
 
@@ -235,19 +255,19 @@ def process_prompts():
 
                             tensors.sin = ropesin[g]
                             tensors.cos = ropecos[g]
-
-                if cache_8bit:
-                    ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
-                else:
-                    ncache = ExLlamaV2Cache(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
+                if not args.use_outlines:
+                    if cache_8bit:
+                        ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
+                    else:
+                        ncache = ExLlamaV2Cache(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
 
                 #print("Setting up Cache: " + str(prompt_id))
-                
+
                 if use_dynamic_rope_scaling:
                     sin_arr.append(ropesin)
                     cos_arr.append(ropecos)
-
-                model.forward(ids[:, :-1], ncache, preprocess_only = True)
+                if not args.use_outlines:
+                    model.forward(ids[:, :-1], ncache, preprocess_only = True)
                 print("Cache setup: " + str(np.shape(ids[:1, :-1])))
                 input_ids.append(ids)
                 prompt_ids.append(prompt_id)
