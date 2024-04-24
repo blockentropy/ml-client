@@ -186,7 +186,6 @@ prompt_length = []
 prompt_ids = []
 streamer = []
 caches = []
-past_seq_length = []
 settings = []
 future_tokens = []
 future_logits = []
@@ -245,41 +244,6 @@ def process_outline_prompts():
                     prompt_tokens = ids.shape[-1]
                     new_tokens = prompt_tokens + max_tokens
                     print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                prompt_length.append(prompt_tokens)
-                if use_dynamic_rope_scaling:
-                    # Dynamic Rope Scaling
-                    head_dim = base_model.config.head_dim
-                    model_base = base_model.config.rotary_embedding_base
-                    max_seq_len = base_model.config.max_seq_len
-                    ratio = new_tokens / base_model_native_max
-                    alpha = 1.0
-                    ropesin = [None] * num_of_gpus
-                    ropecos = [None] * num_of_gpus
-                    if ratio > 1.0:
-                        alpha = ((0.2500*ratio**2) + (0.3500*ratio) + 0.4000)*dynamic_rope_mult + dynamic_rope_offset
-                        print("DYNAMIC ROPE SCALE Alpha: " + str(alpha) + "  Ratio: " + str(ratio))
-
-                    for g in range(num_of_gpus):
-                        base = model_base
-                        try:
-                            tensors = base_model.get_device_tensors(g)
-                        except IndexError:
-                            tensors = None
-
-                        if tensors is not None:
-                            if alpha != 1.0: base *= alpha ** (head_dim / (head_dim - 2))
-
-                            inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device = "cuda:"+str(g)).float() / head_dim))
-                            t = torch.arange(max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
-
-                            freqs = torch.einsum("i,j->ij", t, inv_freq)
-                            emb = torch.cat((freqs, freqs), dim=-1)
-
-                            ropesin[g] = emb.sin()[None, None, :, :].half()
-                            ropecos[g] = emb.cos()[None, None, :, :].half()
-
-                            tensors.sin = ropesin[g]
-                            tensors.cos = ropecos[g]
                 if cache_8bit:
                     ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
                 elif cache_q4:
@@ -303,7 +267,7 @@ def process_outline_prompts():
                 full_tokens = completion_tokens + prompt_tokens
 
 
-                if(streamer[i]):
+                if(stream):
                     ## Generator, yield here..
                     partial_response_data = {
                         "id": f"chatcmpl-{prompt_id}",
