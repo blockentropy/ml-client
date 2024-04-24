@@ -168,7 +168,6 @@ tokenizer = ExLlamaV2Tokenizer(config)
 # Cache mode
 
 
-
 settings_proto = ExLlamaV2Sampler.Settings()
 settings_proto.temperature = 0
 settings_proto.top_k = 50
