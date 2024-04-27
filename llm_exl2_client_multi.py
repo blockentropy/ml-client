@@ -28,6 +28,7 @@ import numpy as np
 import sys, os
 import outlines
 from outlines.samplers import multinomial
+from outlines.generate import continuous
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -253,14 +254,15 @@ def process_outline_prompts():
                 model.past_seq = None
                 stop_at = outlines["stop_at"]
                 if outlines_dict["type"] == "choices":
-                    generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler, max_tokens=max_tokens, stop_at=stop_at)
+                    generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler)
                 elif outlines_dict["type"] == "json":
-                    generator = outlines.generate.json(model, outlines_dict["json"], sampler=sampler, max_tokens=max_tokens, stop_at=stop_at)
+                    generator = outlines.generate.json(model, outlines_dict["json"], sampler=sampler)
                 elif outlines_dict["type"] == "regex":
-                    generator = outlines.generate.regex(model, outlines_dict["regex"], sampler=sampler, max_tokens=max_tokens, stop_at=stop_at)
+                    generator = outlines.generate.regex(model, outlines_dict["regex"], sampler=sampler)
                 else:
-                    generator = outlines.generate.text(model, sampler=sampler, max_tokens=max_tokens, stop_at=stop_at)
-                output = generator(prompt)
+                    generator = outlines.generate.text(model, sampler=sampler)
+                # generator_c = continuous(generator)
+                output = generator(prompt, max_tokens=max_tokens, stop_at=stop_at)
                 completion_tokens = (tokenizer.encode(output)).shape[-1]
                 prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
                 full_tokens = completion_tokens + prompt_tokens
@@ -316,12 +318,12 @@ def process_outline_prompts():
 
 # Worker thread function
 def process_prompts():
-    global partial_responses
-    base_model = model
+    global partial_responses  
+
     while True:
         while not prompts.empty() or len(input_ids):
             while len(input_ids) < max_parallel_seqs and not prompts.empty():
-                prompt_id, prompt, max_tokens, stream, temperature, outlines_dict = prompts.get()
+                prompt_id, prompt, max_tokens, stream, temperature = prompts.get()
                 ids = tokenizer.encode(prompt)
                 prompt_tokens = ids.shape[-1]
                 new_tokens = prompt_tokens + max_tokens
@@ -337,9 +339,8 @@ def process_prompts():
                 prompt_length.append(prompt_tokens)
                 if use_dynamic_rope_scaling:
                     # Dynamic Rope Scaling
-                    head_dim = base_model.config.head_dim
-                    model_base = base_model.config.rotary_embedding_base
-                    max_seq_len = base_model.config.max_seq_len
+                    head_dim = model.config.head_dim
+                    model_base = model.config.rotary_embedding_base
                     ratio = new_tokens / base_model_native_max
                     alpha = 1.0
                     ropesin = [None] * num_of_gpus
@@ -351,15 +352,15 @@ def process_prompts():
                     for g in range(num_of_gpus):
                         base = model_base
                         try:
-                            tensors = base_model.get_device_tensors(g)
+                            tensors = model.get_device_tensors(g)
                         except IndexError:
                             tensors = None
 
                         if tensors is not None:
-                            if alpha != 1.0: base *= alpha ** (head_dim / (head_dim - 2))
+                            if alpha != 1.0: base *= alpha ** (model.config.head_dim / (model.config.head_dim - 2))
 
                             inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device = "cuda:"+str(g)).float() / head_dim))
-                            t = torch.arange(max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
+                            t = torch.arange(model.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
 
                             freqs = torch.einsum("i,j->ij", t, inv_freq)
                             emb = torch.cat((freqs, freqs), dim=-1)
@@ -369,17 +370,18 @@ def process_prompts():
 
                             tensors.sin = ropesin[g]
                             tensors.cos = ropecos[g]
-                if cache_8bit:
-                    ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
-                elif cache_q4:
-                    ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = new_tokens)
-                else:
-                    ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
-                #print("Setting up Cache: " + str(prompt_id))
 
+                if cache_8bit:
+                    ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
+                else:
+                    ncache = ExLlamaV2Cache(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
+
+                #print("Setting up Cache: " + str(prompt_id))
+                
                 if use_dynamic_rope_scaling:
                     sin_arr.append(ropesin)
                     cos_arr.append(ropecos)
+
                 model.forward(ids[:, :-1], ncache, preprocess_only = True)
                 print("Cache setup: " + str(np.shape(ids[:1, :-1])))
                 input_ids.append(ids)
@@ -455,7 +457,7 @@ def process_prompts():
 
                     if token.item() == tokenizer.eos_token_id or diff == """<|im_end|>""" or caches[i].current_seq_len == caches[i].max_seq_len:
                         eos.insert(0, i)
-
+                        
                 # Generate and store response
                 for i in eos:
                     generated_part = input_ids[i][:, prompt_length[i]:]
@@ -511,6 +513,8 @@ def process_prompts():
         else:
             # Sleep for a short duration when there's no work
             time.sleep(0.1)  # Sleep for 100 milliseconds
+
+
 
 
 
