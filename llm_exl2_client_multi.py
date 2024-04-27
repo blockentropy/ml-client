@@ -720,7 +720,11 @@ async def mainchat(request: ChatCompletionRequest):
             outlines_dict["type"] = "text"
         elif args.use_outliens:
             raise NotImplementedError("If outlines is used, the request must be an OutlinesRequest")
-        prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature, outlines_dict))
+        if not args.use_outlines:
+            prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature))
+        else:
+            prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature, outlines_dict))
+
 
         if request.stream:
             #response = StreamingResponse(streaming_request(prompt, request.max_tokens, tempmodel=repo_str, response_format='chat_completion'), media_type="text/event-stream")
