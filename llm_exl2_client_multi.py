@@ -28,7 +28,6 @@ import numpy as np
 import sys, os
 import outlines
 from outlines.samplers import multinomial
-from outlines.generate import continuous
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -186,6 +185,9 @@ prompt_length = []
 prompt_ids = []
 streamer = []
 caches = []
+input_prompts = []
+generators = []
+generations = []
 settings = []
 future_tokens = []
 future_logits = []
@@ -234,22 +236,22 @@ def process_outline_prompts():
                 sampler = multinomial(top_k=50., top_p=1.0, temperature=temperature)
                 ids = tokenizer.encode(prompt)
                 prompt_tokens = ids.shape[-1]
-                new_tokens = prompt_tokens + max_tokens
-                print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
+                full_tokens = prompt_tokens + max_tokens
+                print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
                 # Truncate if new_tokens exceed max_context
-                if new_tokens > max_context:
+                if full_tokens > max_context:
                     # Calculate how many tokens to truncate
                     ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
                     # Update new_tokens after truncation
                     prompt_tokens = ids.shape[-1]
-                    new_tokens = prompt_tokens + max_tokens
-                    print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
+                    full_tokens = prompt_tokens + max_tokens
+                    print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
                 if cache_8bit:
-                    ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
+                    ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                 elif cache_q4:
-                    ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = new_tokens)
+                    ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)
                 else:
-                    ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
+                    ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                 model.cache = ncache
                 model.past_seq = None
                 stop_at = outlines["stop_at"]
@@ -261,56 +263,102 @@ def process_outline_prompts():
                     generator = outlines.generate.regex(model, outlines_dict["regex"], sampler=sampler)
                 else:
                     generator = outlines.generate.text(model, sampler=sampler)
-                # generator_c = continuous(generator)
-                output = generator(prompt, max_tokens=max_tokens, stop_at=stop_at)
-                completion_tokens = (tokenizer.encode(output)).shape[-1]
-                prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
-                full_tokens = completion_tokens + prompt_tokens
+                generators.append(generator.stream(prompt, stop_at=stop_at, max_tokens=max_tokens))
+                input_ids.append(prompt_id)
+                input_prompts.append(prompt)
+                generations.append("")
+                caches.append(ncache)
+                streamer.append(stream)
+                #print("Prompt added to queue: " + str(prompt_id))
+            if(len(input_ids)):
+                eos = []
+                for i in range(len(input_ids)):
+                    model.cache = caches[i]
+                    is_finished = False
+                    try:
+                        decoded_response_token = next(generators[i])
+                        generations[i] += decoded_response_token
+                    except StopIteration:
+                        is_finished = True
+                    reason = None
+                    if(streamer[i]):
+                        outcontent = decoded_response_token
+                        if is_finished:
+                            outcontent = outcontent
+                            reason = "stop"
+                        partial_response_data = {
+                            "id": f"chatcmpl-{prompt_ids[i]}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": repo_str,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "content": outcontent
+                                    },
+                                    "finish_reason": reason
+                                }
+                            ]
+                        }
 
+                        # Initialize a list for new prompt_id or append to existing one
+                        if prompt_ids[i] not in partial_responses:
+                            partial_responses[prompt_ids[i]] = []
+                        partial_responses[prompt_ids[i]].append(partial_response_data)
 
-                if(stream):
-                    ## Generator, yield here..
-                    partial_response_data = {
-                        "id": f"chatcmpl-{prompt_id}",
-                        "object": "chat.completion.chunk",
-                        "created": int(time.time()),
-                        "model": repo_str,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {
-                                    "content": output
-                                },
+                    if is_finished:
+                        eos.insert(0, i)
+
+                # Generate and store response
+                for i in eos:
+                    output = generations[i].strip()
+                    prompt = input_prompts[i]
+                    #output = tokenizer.decode(input_ids[i])[0]
+                    print("-----")
+                    print(output)
+                    generated_text = output
+                    # Calculate token counts
+                    completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
+                    prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
+                    full_tokens = completion_tokens + prompt_tokens
+                    eos_prompt_id = prompt_ids.pop(i)
+                    if(streamer[i]):
+                        ## Generator, yield here..
+                            partial_response_data = {
                                 "finish_reason": "stop"
                             }
-                        ]
-                    }
 
-                    # Initialize a list for new prompt_id or append to existing one
-                    if prompt_id not in partial_responses:
-                        partial_responses[prompt_id] = []
-                    partial_responses[prompt_id].append(partial_response_data)
-                else:# Construct the response based on the format
-                    response_data = {
-                        "id": f"chatcmpl-{prompt_id}",
-                        "object": "chat.completion",
-                        "created": int(time.time()),
-                        "model": repo_str,
-                        "choices": [{
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": output,
-                            },
-                            "finish_reason": "stop"
-                        }],
-                        "usage": {
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": full_tokens
+                            responses[eos_prompt_id] = partial_response_data
+                    else:# Construct the response based on the format
+                        response_data = {
+                            "id": f"chatcmpl-{prompt_id}",
+                            "object": "chat.completion",
+                            "created": int(time.time()),
+                            "model": repo_str,
+                            "choices": [{
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": generated_text,
+                                },
+                                "finish_reason": "stop"
+                            }],
+                            "usage": {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": full_tokens
+                            }
                         }
-                    }
-                    responses[prompt_id] = response_data
+                        responses[eos_prompt_id] = response_data
+
+                    # Clean up
+                    input_ids.pop(i)
+                    input_prompts.pop(i)
+                    generations.pop(i)
+                    caches.pop(i)
+                    streamer.pop(i)
+
         else:
             # Sleep for a short duration when there's no work
             time.sleep(0.1)  # Sleep for 100 milliseconds
@@ -388,8 +436,6 @@ def process_prompts():
                 prompt_ids.append(prompt_id)
                 caches.append(ncache)
                 streamer.append(stream)
-                settings_proto.temperature = temperature
-                settings.append(settings_proto.clone())  # Need individual settings per prompt to support Mirostat
                 future_tokens.append(None)
                 future_logits.append(None)
                 #print("Prompt added to queue: " + str(prompt_id))
