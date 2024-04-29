@@ -736,6 +736,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_commandr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
+        print(prompt)
 
         timeout = 180  # seconds
         start_time = time.time()
