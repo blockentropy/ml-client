@@ -9,23 +9,26 @@ import tiktoken
 import torch
 import random
 from typing import AsyncIterable, List, Generator, Union, Optional
-
+import traceback
+from typing import Mapping
 import requests
 import sseclient
 import subprocess
 import re
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, TextStreamer, TextIteratorStreamer
 from threading import Thread
-from auto_gptq import exllama_set_max_input_length
 import queue
 import numpy as np
 
 import sys, os
+import outlines
+from outlines.samplers import multinomial
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exllamav2 import(
@@ -33,6 +36,7 @@ from exllamav2 import(
     ExLlamaV2Config,
     ExLlamaV2Cache,
     ExLlamaV2Cache_8bit,
+    ExLlamaV2Cache_Q4,
     ExLlamaV2Tokenizer,
 )
 
@@ -79,17 +83,28 @@ class ChatCompletionRequest(BaseModel):
     n: Optional[int] = 1  # default value of 1, batch size
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
+    stop_at: Optional[str] = None
+    outlines_type: Optional[str] = None
+    choices: Optional[list[str]] = None
+    regex: Optional[str] = None
+    json: Optional[str] = None
 
-repo_str = 'commandr-exl2'
 #repo_str = 'theprofessor-exl2-speculative'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
 
 # Add argument for port with default type as integer
 parser.add_argument('--port', type=int, help='Port to run the server on.')
+parser.add_argument('--use_outlines', action='store_true', help='Use outlines.')
+parser.add_argument('--gpu_split', type=str, default="17,19,19,19", help='GPU splits.')
+parser.add_argument('--max_context', type=int, default=12288, help='Context length.')
+parser.add_argument('--cache_8bit', action='store_true', help='Use 8 bit cache.')
+parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
+parser.add_argument('--repo_str', type=str, default='commandr-exl2', help='The model repository name')
 
 # Parse the arguments
 args = parser.parse_args()
+repo_str = args.repo_str
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -112,22 +127,41 @@ dynamic_rope_mult = 1.5
 dynamic_rope_offset = 0.0
 
 ropescale = 1.0
-max_context = 12288
+max_context = args.max_context
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 base_model_native_max = 4096
+cache_8bit = args.cache_8bit
+cache_q4 = args.cache_q4
 
-model = ExLlamaV2(config)
+if args.use_outlines:
+    model = outlines.models.exl2(
+        config.model_dir,
+        "cuda",
+        max_seq_len = config.max_seq_len,
+        scale_pos_emb = config.scale_pos_emb,
+        scale_alpha_value = config.scale_alpha_value,
+        no_flash_attn = config.no_flash_attn,
+        num_experts_per_token = config.num_experts_per_token,
+        cache_8bit = cache_8bit,
+        cache_q4 = cache_q4,
+        tokenizer_kwargs = {},
+        gpu_split = args.gpu_split, # we might be able to make this auto
+        low_mem = None,
+        verbose = None
+    )
+else:
+    model = ExLlamaV2(config)
 print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
-model.load([17,19,19,19])
+if not args.use_outlines:
+    model.load([int(gpu_memory) for gpu_memory in args.gpu_split.split(",")])
 
 tokenizer = ExLlamaV2Tokenizer(config)
 
 # Cache mode
 
-cache_8bit = True
 
 settings_proto = ExLlamaV2Sampler.Settings()
 settings_proto.temperature = 0
@@ -146,6 +180,9 @@ prompt_length = []
 prompt_ids = []
 streamer = []
 caches = []
+input_prompts = []
+generators = []
+generations = []
 settings = []
 future_tokens = []
 future_logits = []
@@ -156,7 +193,7 @@ cos_arr = []
 partial_responses = {}
 
 max_parallel_seqs = 3 
-num_of_gpus = 4
+num_of_gpus = len(args.gpu_split.split(","))
 
 print("*** Loaded.. now Inference...:")
 
@@ -179,6 +216,144 @@ async def stream_response(prompt_id, timeout=180):
                 final_response = responses.pop(prompt_id)
                 yield f'data: {{"id":"chatcmpl-{prompt_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{repo_str}","choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
                 break
+
+# Worker thread function
+def process_outline_prompts():
+    global partial_responses
+    assert args.use_outlines
+    assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
+    base_model = model.model
+    while True:
+        while not prompts.empty() or len(prompt_ids):
+            while len(prompt_ids) < max_parallel_seqs and not prompts.empty():
+                prompt_id, prompt, max_tokens, stream, temperature, outlines_dict = prompts.get()
+                print(f"got prompt with outlines dict {outlines_dict}")
+                sampler = multinomial(top_k=50, top_p=1.0, temperature=temperature)
+                ids = tokenizer.encode(prompt)
+                prompt_tokens = ids.shape[-1]
+                full_tokens = prompt_tokens + max_tokens
+                print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
+                # Truncate if new_tokens exceed max_context
+                if full_tokens > max_context:
+                    # Calculate how many tokens to truncate
+                    ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
+                    # Update new_tokens after truncation
+                    prompt_tokens = ids.shape[-1]
+                    full_tokens = prompt_tokens + max_tokens
+                    print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
+                if cache_8bit:
+                    ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
+                elif cache_q4:
+                    ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)
+                else:
+                    ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
+                model.cache = ncache
+                model.past_seq = None
+                stop_at = outlines_dict["stop_at"]
+                if outlines_dict["type"] == "choices":
+                    generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler)
+                elif outlines_dict["type"] == "json":
+                    generator = outlines.generate.json(model, outlines_dict["json"], sampler=sampler)
+                elif outlines_dict["type"] == "regex":
+                    generator = outlines.generate.regex(model, outlines_dict["regex"], sampler=sampler)
+                else:
+                    generator = outlines.generate.text(model, sampler=sampler)
+                generators.append(generator.stream(prompt, stop_at=stop_at, max_tokens=max_tokens))
+                prompt_ids.append(prompt_id)
+                input_prompts.append(prompt)
+                generations.append("")
+                caches.append(ncache)
+                streamer.append(stream)
+            if(len(prompt_ids)):
+                eos = []
+                for i in range(len(prompt_ids)):
+                    model.cache = caches[i]
+                    is_finished = False
+                    try:
+                        decoded_response_token = next(generators[i])
+                        generations[i] += decoded_response_token
+                    except StopIteration:
+                        is_finished = True
+                    reason = None
+                    if(streamer[i]):
+                        outcontent = decoded_response_token
+                        if is_finished:
+                            outcontent = ""
+                            reason = "stop"
+                        partial_response_data = {
+                            "id": f"chatcmpl-{prompt_ids[i]}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": repo_str,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "content": outcontent
+                                    },
+                                    "finish_reason": reason
+                                }
+                            ]
+                        }
+
+                        # Initialize a list for new prompt_id or append to existing one
+                        if prompt_ids[i] not in partial_responses:
+                            partial_responses[prompt_ids[i]] = []
+                        partial_responses[prompt_ids[i]].append(partial_response_data)
+
+                    if is_finished:
+                        eos.insert(0, i)
+
+                # Generate and store response
+                for i in eos:
+                    output = generations[i].strip()
+                    prompt = input_prompts[i]
+                    #output = tokenizer.decode(input_ids[i])[0]
+                    print("-----")
+                    print(output)
+                    generated_text = output
+                    # Calculate token counts
+                    completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
+                    prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
+                    full_tokens = completion_tokens + prompt_tokens
+                    eos_prompt_id = prompt_ids.pop(i)
+                    if(streamer[i]):
+                        ## Generator, yield here..
+                            partial_response_data = {
+                                "finish_reason": "stop"
+                            }
+
+                            responses[eos_prompt_id] = partial_response_data
+                    else:# Construct the response based on the format
+                        response_data = {
+                            "id": f"chatcmpl-{prompt_id}",
+                            "object": "chat.completion",
+                            "created": int(time.time()),
+                            "model": repo_str,
+                            "choices": [{
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": generated_text,
+                                },
+                                "finish_reason": "stop"
+                            }],
+                            "usage": {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": full_tokens
+                            }
+                        }
+                        responses[eos_prompt_id] = response_data
+                    # Clean up
+                    input_prompts.pop(i)
+                    generations.pop(i)
+                    caches.pop(i)
+                    streamer.pop(i)
+
+        else:
+            # Sleep for a short duration when there's no work
+            time.sleep(0.1)  # Sleep for 100 milliseconds
 
 
 # Worker thread function
@@ -253,8 +428,6 @@ def process_prompts():
                 prompt_ids.append(prompt_id)
                 caches.append(ncache)
                 streamer.append(stream)
-                settings_proto.temperature = temperature
-                settings.append(settings_proto.clone())  # Need individual settings per prompt to support Mirostat
                 future_tokens.append(None)
                 future_logits.append(None)
                 #print("Prompt added to queue: " + str(prompt_id))
@@ -363,7 +536,6 @@ def process_prompts():
                                 "total_tokens": full_tokens
                             }
                         }
-                        
                         responses[eos_prompt_id] = response_data
 
                     # Clean up
@@ -382,8 +554,10 @@ def process_prompts():
 
 
 
+
+
 # Start worker thread
-worker = Thread(target=process_prompts)
+worker = Thread(target=process_prompts if not args.use_outlines else process_outline_prompts)
 worker.start()
 
 
@@ -542,7 +716,6 @@ async def format_prompt_commandr(messages):
 
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
-
     try:
         prompt = ''
         if repo_str == 'Phind-CodeLlama-34B-v2':
@@ -568,7 +741,27 @@ async def mainchat(request: ChatCompletionRequest):
         timeout = 180  # seconds
         start_time = time.time()
         prompt_id = generate_unique_id() # Replace with a function to generate unique IDs
-        prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature))
+        outlines_dict = {}
+        if request.stop_at is not None:
+            outlines_dict["stop_at"] = request.stop_at
+        if request.outlines_type is not None:
+            outlines_dict["type"] = request.outlines_type
+        if outlines_dict["type"] == "choices":
+            assert request.choices is not None
+            outlines_dict["choices"] = request.choices
+        elif outlines_dict["type"] == "json":
+            assert request.json is not None
+            outlines_dict["json"] = request.json
+        elif outlines_dict["type"] == "regex":
+            assert request.regex is not None
+            outlines_dict["regex"] = request.regex
+        else:
+            assert (outlines_dict["type"] == "text") or not args.outlines
+        if not args.use_outlines:
+            prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature))
+        else:
+            prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature, outlines_dict))
+
 
         if request.stream:
             #response = StreamingResponse(streaming_request(prompt, request.max_tokens, tempmodel=repo_str, response_format='chat_completion'), media_type="text/event-stream")
@@ -584,6 +777,7 @@ async def mainchat(request: ChatCompletionRequest):
             return responses.pop(prompt_id)
 
     except Exception as e:
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
     return response
