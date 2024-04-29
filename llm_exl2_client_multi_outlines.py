@@ -249,7 +249,7 @@ def process_outline_prompts():
                     ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                 model.cache = ncache
                 model.past_seq = None
-                stop_at = outlines_dict["stop_at"]
+                stop_at = outlines_dict.get("stop_at", None)
                 if outlines_dict["type"] == "choices":
                     generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler)
                 elif outlines_dict["type"] == "json":
