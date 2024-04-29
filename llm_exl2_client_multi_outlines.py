@@ -84,7 +84,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
     stop_at: Optional[str] = None
-    outlines_type: Optional[str] = None
+    outlines_type: Optional[str] = "text"
     choices: Optional[list[str]] = None
     regex: Optional[str] = None
     json: Optional[str] = None
