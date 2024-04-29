@@ -781,8 +781,8 @@ async def mainchat(request: ChatCompletionRequest):
         elif outlines_dict["type"] == "regex":
             assert request.regex is not None
             outlines_dict["regex"] = request.regex
-        else:
-            assert (outlines_dict["type"] == "text") or not args.outlines
+        elif args.use_outlines:
+            outlines_dict["type"] = "text"
         if not args.use_outlines:
             prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature))
         else:
