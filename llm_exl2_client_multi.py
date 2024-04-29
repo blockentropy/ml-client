@@ -9,7 +9,8 @@ import tiktoken
 import torch
 import random
 from typing import AsyncIterable, List, Generator, Union, Optional
-
+import traceback
+from typing import Mapping
 import requests
 import sseclient
 import subprocess
@@ -21,7 +22,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, TextStreamer, TextIteratorStreamer
 from threading import Thread
-from auto_gptq import exllama_set_max_input_length
 import queue
 import numpy as np
 
@@ -83,23 +83,12 @@ class ChatCompletionRequest(BaseModel):
     n: Optional[int] = 1  # default value of 1, batch size
     top_p: Optional[float] = 0.0  # default value of 0.0
     user: Optional[str] = None
+    stop_at: Optional[str] = None
+    outlines_type: Optional[str] = None
+    choices: Optional[list[str]] = None
+    regex: Optional[str] = None
+    json: Optional[str] = None
 
-class OutlinesRequest(ChatCompletionRequest):
-    ends_at: str | None = None
-
-class OutlinesChoiceRequest(OutlinesRequest):
-    choices: list[str]
-
-class OutlinesRegexRequest(OutlinesRequest):
-    regex: str
-
-class OutlinesJsonRequest(OutlinesRequest):
-    json: str
-
-class OutlinesTextRequest(OutlinesRequest):
-    pass
-
-repo_str = 'commandr-exl2'
 #repo_str = 'theprofessor-exl2-speculative'
 
 parser = argparse.ArgumentParser(description='Run server with specified port.')
@@ -107,9 +96,15 @@ parser = argparse.ArgumentParser(description='Run server with specified port.')
 # Add argument for port with default type as integer
 parser.add_argument('--port', type=int, help='Port to run the server on.')
 parser.add_argument('--use_outlines', action='store_true', help='Use outlines.')
+parser.add_argument('--gpu_split', type=str, default="17,19,19,19", help='GPU splits.')
+parser.add_argument('--max_context', type=int, default=12288, help='Context length.')
+parser.add_argument('--cache_8bit', action='store_true', help='Use 8 bit cache.')
+parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
+parser.add_argument('--repo_str', type=str, default='commandr-exl2', help='The model repository name')
 
 # Parse the arguments
 args = parser.parse_args()
+repo_str = args.repo_str
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -132,12 +127,12 @@ dynamic_rope_mult = 1.5
 dynamic_rope_offset = 0.0
 
 ropescale = 1.0
-max_context = 12288
+max_context = args.max_context
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 base_model_native_max = 4096
-cache_8bit = True
-cache_q4 = False
+cache_8bit = args.cache_8bit
+cache_q4 = args.cache_q4
 
 if args.use_outlines:
     model = outlines.models.exl2(
@@ -151,7 +146,7 @@ if args.use_outlines:
         cache_8bit = cache_8bit,
         cache_q4 = cache_q4,
         tokenizer_kwargs = {},
-        gpu_split = "17,19,19,19", # we might be able to make this auto
+        gpu_split = args.gpu_split, # we might be able to make this auto
         low_mem = None,
         verbose = None
     )
@@ -161,7 +156,7 @@ print("Loading model: " + repo_id)
 #cache = ExLlamaV2Cache(model, lazy=True, max_seq_len = 20480)
 #model.load_autosplit(cache)
 if not args.use_outlines:
-    model.load([17,19,19,19])
+    model.load([int(gpu_memory) for gpu_memory in args.gpu_split.split(",")])
 
 tokenizer = ExLlamaV2Tokenizer(config)
 
@@ -198,7 +193,7 @@ cos_arr = []
 partial_responses = {}
 
 max_parallel_seqs = 3 
-num_of_gpus = 4
+num_of_gpus = len(args.gpu_split.split(","))
 
 print("*** Loaded.. now Inference...:")
 
@@ -224,16 +219,16 @@ async def stream_response(prompt_id, timeout=180):
 
 # Worker thread function
 def process_outline_prompts():
-    # TODO: Somehow make this streams
     global partial_responses
     assert args.use_outlines
     assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
     base_model = model.model
     while True:
-        while not prompts.empty() or len(input_ids):
-            while len(input_ids) < max_parallel_seqs and not prompts.empty():
+        while not prompts.empty() or len(prompt_ids):
+            while len(prompt_ids) < max_parallel_seqs and not prompts.empty():
                 prompt_id, prompt, max_tokens, stream, temperature, outlines_dict = prompts.get()
-                sampler = multinomial(top_k=50., top_p=1.0, temperature=temperature)
+                print(f"got prompt with outlines dict {outlines_dict}")
+                sampler = multinomial(top_k=50, top_p=1.0, temperature=temperature)
                 ids = tokenizer.encode(prompt)
                 prompt_tokens = ids.shape[-1]
                 full_tokens = prompt_tokens + max_tokens
@@ -254,7 +249,7 @@ def process_outline_prompts():
                     ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                 model.cache = ncache
                 model.past_seq = None
-                stop_at = outlines["stop_at"]
+                stop_at = outlines_dict["stop_at"]
                 if outlines_dict["type"] == "choices":
                     generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler)
                 elif outlines_dict["type"] == "json":
@@ -264,15 +259,14 @@ def process_outline_prompts():
                 else:
                     generator = outlines.generate.text(model, sampler=sampler)
                 generators.append(generator.stream(prompt, stop_at=stop_at, max_tokens=max_tokens))
-                input_ids.append(prompt_id)
+                prompt_ids.append(prompt_id)
                 input_prompts.append(prompt)
                 generations.append("")
                 caches.append(ncache)
                 streamer.append(stream)
-                #print("Prompt added to queue: " + str(prompt_id))
-            if(len(input_ids)):
+            if(len(prompt_ids)):
                 eos = []
-                for i in range(len(input_ids)):
+                for i in range(len(prompt_ids)):
                     model.cache = caches[i]
                     is_finished = False
                     try:
@@ -284,7 +278,7 @@ def process_outline_prompts():
                     if(streamer[i]):
                         outcontent = decoded_response_token
                         if is_finished:
-                            outcontent = outcontent
+                            outcontent = ""
                             reason = "stop"
                         partial_response_data = {
                             "id": f"chatcmpl-{prompt_ids[i]}",
@@ -351,9 +345,7 @@ def process_outline_prompts():
                             }
                         }
                         responses[eos_prompt_id] = response_data
-
                     # Clean up
-                    input_ids.pop(i)
                     input_prompts.pop(i)
                     generations.pop(i)
                     caches.pop(i)
@@ -724,7 +716,6 @@ async def format_prompt_commandr(messages):
 
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
-
     try:
         prompt = ''
         if repo_str == 'Phind-CodeLlama-34B-v2':
@@ -745,27 +736,26 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_commandr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
-        print(prompt)
 
         timeout = 180  # seconds
         start_time = time.time()
         prompt_id = generate_unique_id() # Replace with a function to generate unique IDs
         outlines_dict = {}
-        if isinstance(request, OutlinesRequest):
-            outlines_dict["ends_at"] = request.ends_at
-        if isinstance(request, OutlinesChoiceRequest):
-            outlines_dict["type"] = "choices"
+        if request.stop_at is not None:
+            outlines_dict["stop_at"] = request.stop_at
+        if request.outlines_type is not None:
+            outlines_dict["type"] = request.outlines_type
+        if outlines_dict["type"] == "choices":
+            assert request.choices is not None
             outlines_dict["choices"] = request.choices
-        elif isinstance(request, OutlinesJsonRequest):
-            outlines_dict["type"] = "json"
+        elif outlines_dict["type"] == "json":
+            assert request.json is not None
             outlines_dict["json"] = request.json
-        elif isinstance(request, OutlinesRegexRequest):
-            outlines_dict["type"] = "regex"
+        elif outlines_dict["type"] == "regex":
+            assert request.regex is not None
             outlines_dict["regex"] = request.regex
-        elif isinstance(request, OutlinesTextRequest):
-            outlines_dict["type"] = "text"
-        elif args.use_outliens:
-            raise NotImplementedError("If outlines is used, the request must be an OutlinesRequest")
+        else:
+            assert (outlines_dict["type"] == "text") or not args.outlines
         if not args.use_outlines:
             prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature))
         else:
@@ -786,6 +776,7 @@ async def mainchat(request: ChatCompletionRequest):
             return responses.pop(prompt_id)
 
     except Exception as e:
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
     return response
