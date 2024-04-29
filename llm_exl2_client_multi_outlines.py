@@ -100,7 +100,7 @@ parser.add_argument('--gpu_split', type=str, default="17,19,19,19", help='GPU sp
 parser.add_argument('--max_context', type=int, default=12288, help='Context length.')
 parser.add_argument('--cache_8bit', action='store_true', help='Use 8 bit cache.')
 parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
-parser.add_argument('--repo_str', type=str, default='commandr-exl2', help='The model repository name')
+parser.add_argument('--repo_str', type=str, default='llama3-70b-instruct', help='The model repository name')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -130,7 +130,7 @@ ropescale = 1.0
 max_context = args.max_context
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
-base_model_native_max = 4096
+base_model_native_max = 8192
 cache_8bit = args.cache_8bit
 cache_q4 = args.cache_q4
 
@@ -574,6 +574,30 @@ async def format_prompt(messages):
     formatted_prompt += "### Assistant:\n"
     return formatted_prompt
 
+async def format_prompt_llama3(messages):
+    formatted_prompt = ""
+    system_message_found = False
+
+    # Check for a system message first
+    for message in messages:
+        if message.role == "system":
+            system_message_found = True
+            break
+
+    # If no system message was found, prepend a default one
+    if not system_message_found:
+        formatted_prompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful AI assistant.<|eot_id|>"
+    for message in messages:
+        if message.role == "system":
+            formatted_prompt += f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{message.content}<|eot_id|>"
+        elif message.role == "user":
+            formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{message.content}<|eot_id|>"
+        elif message.role == "assistant":
+            formatted_prompt += f"<|start_header_id|>assistant<|end_header_id|>\n\n{message.content}<|eot_id|>"
+    # Add the final "### Assistant:\n" to prompt for the next response
+    formatted_prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    return formatted_prompt
+
 async def format_prompt_yi(messages):
     formatted_prompt = ""
     system_message_found = False
@@ -722,6 +746,8 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_code(request.messages)
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
+        elif repo_str == 'llama3-70b-instruct':
+            prompt = await format_prompt_llama3(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
         elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
