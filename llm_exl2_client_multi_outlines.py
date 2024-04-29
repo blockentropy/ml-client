@@ -772,6 +772,10 @@ async def mainchat(request: ChatCompletionRequest):
             outlines_dict["stop_at"] = request.stop_at
         if request.outlines_type is not None:
             outlines_dict["type"] = request.outlines_type
+        elif args.use_outlines:
+            outlines_dict["type"] = "text"
+        else:
+            raise Exception("Enable outlines")
         if outlines_dict["type"] == "choices":
             assert request.choices is not None
             outlines_dict["choices"] = request.choices
@@ -781,8 +785,8 @@ async def mainchat(request: ChatCompletionRequest):
         elif outlines_dict["type"] == "regex":
             assert request.regex is not None
             outlines_dict["regex"] = request.regex
-        elif args.use_outlines:
-            outlines_dict["type"] = "text"
+        else:
+            assert (outlines_dict["type"] == "text") or not args.outlines
         if not args.use_outlines:
             prompts.put((prompt_id, prompt, request.max_tokens, request.stream, request.temperature))
         else:
