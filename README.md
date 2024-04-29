@@ -64,7 +64,3 @@ pip install flash-attn --no-build-isolation
 ```
 
 Ubuntu 23 does not require the adding of any repos for the toolkit.
-
-```
-python llm_exl2_client_multi.py --port=5000 --use_outlines --gpu_split="5" --max_context=512 --repo_str=phi3b
-```
