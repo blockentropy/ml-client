@@ -235,6 +235,13 @@ def process_outline_prompts():
                 max_tokens=min(max_tokens, max_context-prompt_tokens)
                 full_tokens = prompt_tokens + max_tokens
                 print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
+                if full_tokens > max_context:
+                    # Calculate how many tokens to truncate
+                    ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
+                    # Update new_tokens after truncation
+                    prompt_tokens = ids.shape[-1]
+                    full_tokens = prompt_tokens + max_tokens
+                    print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
                 if cache_8bit:
                     ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                 elif cache_q4:
