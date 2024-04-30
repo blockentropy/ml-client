@@ -26,6 +26,7 @@ import queue
 import numpy as np
 
 import sys, os
+sys.path.append("./outlines")
 import outlines
 from outlines.samplers import multinomial
 
@@ -137,7 +138,7 @@ cache_q4 = args.cache_q4
 if args.use_outlines:
     model = outlines.models.exl2(
         config.model_dir,
-        "cuda:0",
+        "cuda",
         max_seq_len = config.max_seq_len,
         scale_pos_emb = config.scale_pos_emb,
         scale_alpha_value = config.scale_alpha_value,
@@ -231,16 +232,9 @@ def process_outline_prompts():
                 sampler = multinomial(top_k=50, top_p=1.0, temperature=temperature)
                 ids = tokenizer.encode(prompt)
                 prompt_tokens = ids.shape[-1]
+                max_tokens=min(max_tokens, max_context-prompt_tokens)
                 full_tokens = prompt_tokens + max_tokens
                 print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
-                # Truncate if new_tokens exceed max_context
-                if full_tokens > max_context:
-                    # Calculate how many tokens to truncate
-                    ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
-                    # Update new_tokens after truncation
-                    prompt_tokens = ids.shape[-1]
-                    full_tokens = prompt_tokens + max_tokens
-                    print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
                 if cache_8bit:
                     ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                 elif cache_q4:
@@ -346,6 +340,7 @@ def process_outline_prompts():
                         }
                         responses[eos_prompt_id] = response_data
                     # Clean up
+                    generators.pop(i)
                     input_prompts.pop(i)
                     generations.pop(i)
                     caches.pop(i)
