@@ -235,6 +235,7 @@ def process_outline_prompts():
                 max_tokens=min(max_tokens, max_context-prompt_tokens)
                 full_tokens = prompt_tokens + max_tokens
                 print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
+                # Truncate if new_tokens exceed max_context
                 if full_tokens > max_context:
                     # Calculate how many tokens to truncate
                     ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
