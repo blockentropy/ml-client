@@ -26,7 +26,6 @@ import queue
 import numpy as np
 
 import sys, os
-sys.path.append("./outlines")
 import outlines
 from outlines.samplers import multinomial
 
@@ -102,6 +101,7 @@ parser.add_argument('--max_context', type=int, default=12288, help='Context leng
 parser.add_argument('--cache_8bit', action='store_true', help='Use 8 bit cache.')
 parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
 parser.add_argument('--repo_str', type=str, default='llama3-70b-instruct', help='The model repository name')
+parser.add_argument('--outlines_device', type=int, default=2, help='The cuda device to which the outlines device is set')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -138,7 +138,7 @@ cache_q4 = args.cache_q4
 if args.use_outlines:
     model = outlines.models.exl2(
         config.model_dir,
-        "cuda",
+        f"cuda:{args.outlines_device}",
         max_seq_len = config.max_seq_len,
         scale_pos_emb = config.scale_pos_emb,
         scale_alpha_value = config.scale_alpha_value,
