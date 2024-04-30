@@ -137,7 +137,7 @@ cache_q4 = args.cache_q4
 if args.use_outlines:
     model = outlines.models.exl2(
         config.model_dir,
-        "cuda",
+        "cuda:2",
         max_seq_len = config.max_seq_len,
         scale_pos_emb = config.scale_pos_emb,
         scale_alpha_value = config.scale_alpha_value,
