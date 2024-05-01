@@ -101,6 +101,7 @@ parser.add_argument('--max_context', type=int, default=12288, help='Context leng
 parser.add_argument('--cache_8bit', action='store_true', help='Use 8 bit cache.')
 parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
 parser.add_argument('--repo_str', type=str, default='llama3-70b-instruct', help='The model repository name')
+parser.add_argument('--outlines_device', type=int, default=2, help='The cuda device to which the outlines device is set')
 
 # Parse the arguments
 args = parser.parse_args()
@@ -137,7 +138,7 @@ cache_q4 = args.cache_q4
 if args.use_outlines:
     model = outlines.models.exl2(
         config.model_dir,
-        "cuda:2",
+        f"cuda:{args.outlines_device}",
         max_seq_len = config.max_seq_len,
         scale_pos_emb = config.scale_pos_emb,
         scale_alpha_value = config.scale_alpha_value,
@@ -231,6 +232,7 @@ def process_outline_prompts():
                 sampler = multinomial(top_k=50, top_p=1.0, temperature=temperature)
                 ids = tokenizer.encode(prompt)
                 prompt_tokens = ids.shape[-1]
+                max_tokens=min(max_tokens, max_context-prompt_tokens)
                 full_tokens = prompt_tokens + max_tokens
                 print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
                 # Truncate if new_tokens exceed max_context
@@ -346,6 +348,7 @@ def process_outline_prompts():
                         }
                         responses[eos_prompt_id] = response_data
                     # Clean up
+                    generators.pop(i)
                     input_prompts.pop(i)
                     generations.pop(i)
                     caches.pop(i)
