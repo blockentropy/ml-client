@@ -28,7 +28,7 @@ import numpy as np
 import sys, os
 import outlines
 from outlines.samplers import multinomial
-
+from exl2_outlines import exl2
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exllamav2 import(
@@ -136,7 +136,7 @@ cache_8bit = args.cache_8bit
 cache_q4 = args.cache_q4
 
 if args.use_outlines:
-    model = outlines.models.exl2(
+    model = exl2(
         config.model_dir,
         f"cuda:{args.outlines_device}",
         max_seq_len = config.max_seq_len,
@@ -359,208 +359,9 @@ def process_outline_prompts():
             time.sleep(0.1)  # Sleep for 100 milliseconds
 
 
-# Worker thread function
-def process_prompts():
-    global partial_responses  
-
-    while True:
-        while not prompts.empty() or len(input_ids):
-            while len(input_ids) < max_parallel_seqs and not prompts.empty():
-                prompt_id, prompt, max_tokens, stream, temperature = prompts.get()
-                ids = tokenizer.encode(prompt)
-                prompt_tokens = ids.shape[-1]
-                new_tokens = prompt_tokens + max_tokens
-                print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                # Truncate if new_tokens exceed max_context
-                if new_tokens > max_context:
-                    # Calculate how many tokens to truncate
-                    ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
-                    # Update new_tokens after truncation
-                    prompt_tokens = ids.shape[-1]
-                    new_tokens = prompt_tokens + max_tokens
-                    print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                prompt_length.append(prompt_tokens)
-                if use_dynamic_rope_scaling:
-                    # Dynamic Rope Scaling
-                    head_dim = model.config.head_dim
-                    model_base = model.config.rotary_embedding_base
-                    ratio = new_tokens / base_model_native_max
-                    alpha = 1.0
-                    ropesin = [None] * num_of_gpus
-                    ropecos = [None] * num_of_gpus
-                    if ratio > 1.0:
-                        alpha = ((0.2500*ratio**2) + (0.3500*ratio) + 0.4000)*dynamic_rope_mult + dynamic_rope_offset
-                        print("DYNAMIC ROPE SCALE Alpha: " + str(alpha) + "  Ratio: " + str(ratio))
-
-                    for g in range(num_of_gpus):
-                        base = model_base
-                        try:
-                            tensors = model.get_device_tensors(g)
-                        except IndexError:
-                            tensors = None
-
-                        if tensors is not None:
-                            if alpha != 1.0: base *= alpha ** (model.config.head_dim / (model.config.head_dim - 2))
-
-                            inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, device = "cuda:"+str(g)).float() / head_dim))
-                            t = torch.arange(model.config.max_seq_len, device = "cuda:"+str(g), dtype = torch.float32)
-
-                            freqs = torch.einsum("i,j->ij", t, inv_freq)
-                            emb = torch.cat((freqs, freqs), dim=-1)
-
-                            ropesin[g] = emb.sin()[None, None, :, :].half()
-                            ropecos[g] = emb.cos()[None, None, :, :].half()
-
-                            tensors.sin = ropesin[g]
-                            tensors.cos = ropecos[g]
-
-                if cache_8bit:
-                    ncache = ExLlamaV2Cache_8bit(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
-                else:
-                    ncache = ExLlamaV2Cache(model, max_seq_len = new_tokens)  # (max_seq_len could be different for each cache)
-
-                #print("Setting up Cache: " + str(prompt_id))
-                
-                if use_dynamic_rope_scaling:
-                    sin_arr.append(ropesin)
-                    cos_arr.append(ropecos)
-
-                model.forward(ids[:, :-1], ncache, preprocess_only = True)
-                print("Cache setup: " + str(np.shape(ids[:1, :-1])))
-                input_ids.append(ids)
-                prompt_ids.append(prompt_id)
-                caches.append(ncache)
-                streamer.append(stream)
-                future_tokens.append(None)
-                future_logits.append(None)
-                #print("Prompt added to queue: " + str(prompt_id))
-
-            # Create a batch tensor of the last token in each active sequence, forward through the model using the list of
-            # active caches rather than a single, batched cache. Then sample for each token indidividually with some
-            # arbitrary stop condition
-            if(len(input_ids)):
-                #inputs = torch.cat([x[:, -1:] for x in input_ids], dim = 0)
-                #logits = model.forward(inputs, caches, input_mask = None).float().cpu()
-                eos = []
-                r = random.random()
-                for i in range(len(input_ids)):
-                    # if using dynamic rope
-                    if use_dynamic_rope_scaling:
-                        for g in range(num_of_gpus):
-                            if sin_arr[i][g] is not None and cos_arr[i][g] is not None:
-                                tensors = model.get_device_tensors(g)
-                                tensors.sin = sin_arr[i][g]
-                                tensors.cos = cos_arr[i][g]
-
-                    logits = model.forward(input_ids[i][:, -1:], caches[i], input_mask = None ).float().cpu()
-                    token, _, _, _, _ = ExLlamaV2Sampler.sample(logits[:, :1, :], settings[i], input_ids[i], r, tokenizer)
-
-                    input_ids[i] = torch.cat([input_ids[i], token], dim = 1)
-
-                    new_text = tokenizer.decode(input_ids[i][:, -2:-1], decode_special_tokens=False)[0]
-                    new_text2 = tokenizer.decode(input_ids[i][:, -2:], decode_special_tokens=False)[0]
-                    if '�' in new_text:
-                        diff = new_text2
-                    else:
-                        diff = new_text2[len(new_text):]
-
-                    if '�' in diff:
-                        diff = ""
-
-                    #print(diff)
-                    reason = None
-                    if(streamer[i]):
-                        ## Generator, yield here..
-                        outcontent = diff
-                        if diff == """<|im_end|>""":
-                            outcontent = ""
-                            reason = "stop"
-                        partial_response_data = {
-                            "id": f"chatcmpl-{prompt_ids[i]}",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": repo_str,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {
-                                        "content": outcontent
-                                    },
-                                    "finish_reason": reason
-                                }
-                            ]
-                        }
-
-                        # Initialize a list for new prompt_id or append to existing one
-                        if prompt_ids[i] not in partial_responses:
-                            partial_responses[prompt_ids[i]] = []
-                        partial_responses[prompt_ids[i]].append(partial_response_data)
-
-                    if token.item() == tokenizer.eos_token_id or diff == """<|im_end|>""" or caches[i].current_seq_len == caches[i].max_seq_len:
-                        eos.insert(0, i)
-                        
-                # Generate and store response
-                for i in eos:
-                    generated_part = input_ids[i][:, prompt_length[i]:]
-                    output = tokenizer.decode(generated_part[0]).strip()
-                    #output = tokenizer.decode(input_ids[i])[0]
-                    print("-----")
-                    print(output)
-                    generated_text = output
-                    # Calculate token counts
-                    completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
-                    prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
-                    full_tokens = completion_tokens + prompt_tokens
-                    eos_prompt_id = prompt_ids.pop(i)
-                    if(streamer[i]):
-                        ## Generator, yield here..
-                            partial_response_data = {
-                                "finish_reason": "stop"
-                            }
-
-                            responses[eos_prompt_id] = partial_response_data
-                    else:# Construct the response based on the format
-                        response_data = {
-                            "id": f"chatcmpl-{prompt_id}",
-                            "object": "chat.completion",
-                            "created": int(time.time()),
-                            "model": repo_str,
-                            "choices": [{
-                                "index": 0,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": generated_text,
-                                },
-                                "finish_reason": "stop"
-                            }],
-                            "usage": {
-                                "prompt_tokens": prompt_tokens,
-                                "completion_tokens": completion_tokens,
-                                "total_tokens": full_tokens
-                            }
-                        }
-                        responses[eos_prompt_id] = response_data
-
-                    # Clean up
-                    input_ids.pop(i)
-                    caches.pop(i)
-                    settings.pop(i)
-                    prompt_length.pop(i)
-                    streamer.pop(i)
-                    if use_dynamic_rope_scaling:
-                        cos_arr.pop(i)
-                        sin_arr.pop(i)
-
-        else:
-            # Sleep for a short duration when there's no work
-            time.sleep(0.1)  # Sleep for 100 milliseconds
-
-
-
-
 
 # Start worker thread
-worker = Thread(target=process_prompts if not args.use_outlines else process_outline_prompts)
+worker = Thread(target=process_outline_prompts)
 worker.start()
 
 
