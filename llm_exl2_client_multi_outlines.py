@@ -28,7 +28,6 @@ import numpy as np
 import sys, os
 import outlines
 from outlines.samplers import multinomial
-from exl2_outlines import exl2
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exllamav2 import(
@@ -136,7 +135,7 @@ cache_8bit = args.cache_8bit
 cache_q4 = args.cache_q4
 
 if args.use_outlines:
-    model = exl2(
+    model = outlines.models.exl2(
         config.model_dir,
         f"cuda:{args.outlines_device}",
         max_seq_len = config.max_seq_len,
@@ -221,6 +220,11 @@ async def stream_response(prompt_id, timeout=180):
 # Worker thread function
 def process_outline_prompts():
     global partial_responses
+    global generators
+    global input_prompts
+    global generations
+    global caches
+    global streamer
     assert args.use_outlines
     assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
     base_model = model.model
@@ -269,84 +273,102 @@ def process_outline_prompts():
             if(len(prompt_ids)):
                 eos = []
                 for i in range(len(prompt_ids)):
-                    model.cache = caches[i]
-                    is_finished = False
                     try:
-                        decoded_response_token = next(generators[i])
-                        generations[i] += decoded_response_token
-                    except StopIteration:
-                        is_finished = True
-                    reason = None
-                    if(streamer[i]):
-                        outcontent = decoded_response_token
+                        model.cache = caches[i]
+                        is_finished = False
+                        try:
+                            decoded_response_token = next(generators[i])
+                            generations[i] += decoded_response_token
+                        except StopIteration:
+                            is_finished = True
+                        except Exception:
+                            raise Exception("HTTP error")
+                        reason = None
+                        if(streamer[i]):
+                            outcontent = decoded_response_token
+                            if is_finished:
+                                outcontent = ""
+                                reason = "stop"
+                            partial_response_data = {
+                                "id": f"chatcmpl-{prompt_ids[i]}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": repo_str,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {
+                                            "content": outcontent
+                                        },
+                                        "finish_reason": reason
+                                    }
+                                ]
+                            }
+
+                            # Initialize a list for new prompt_id or append to existing one
+                            if prompt_ids[i] not in partial_responses:
+                                partial_responses[prompt_ids[i]] = []
+                            partial_responses[prompt_ids[i]].append(partial_response_data)
+
                         if is_finished:
-                            outcontent = ""
-                            reason = "stop"
-                        partial_response_data = {
-                            "id": f"chatcmpl-{prompt_ids[i]}",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": repo_str,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {
-                                        "content": outcontent
-                                    },
-                                    "finish_reason": reason
-                                }
-                            ]
-                        }
-
-                        # Initialize a list for new prompt_id or append to existing one
-                        if prompt_ids[i] not in partial_responses:
-                            partial_responses[prompt_ids[i]] = []
-                        partial_responses[prompt_ids[i]].append(partial_response_data)
-
-                    if is_finished:
-                        eos.insert(0, i)
+                            eos.insert(0, i)
+                    except Exception:
+                        generators.pop(i)
+                        input_prompts.pop(i)
+                        generations.pop(i)
+                        caches.pop(i)
+                        streamer.pop(i)
+                        raise Exception("HTTP error during generation")
 
                 # Generate and store response
                 for i in eos:
-                    output = generations[i].strip()
-                    prompt = input_prompts[i]
-                    #output = tokenizer.decode(input_ids[i])[0]
-                    print("-----")
-                    print(output)
-                    generated_text = output
-                    # Calculate token counts
-                    completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
-                    prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
-                    full_tokens = completion_tokens + prompt_tokens
-                    eos_prompt_id = prompt_ids.pop(i)
-                    if(streamer[i]):
-                        ## Generator, yield here..
-                            partial_response_data = {
-                                "finish_reason": "stop"
-                            }
+                    try:
+                        output = generations[i].strip()
+                        prompt = input_prompts[i]
+                        #output = tokenizer.decode(input_ids[i])[0]
+                        print("-----")
+                        print(output)
+                        generated_text = output
+                        # Calculate token counts
+                        completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
+                        prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
+                        full_tokens = completion_tokens + prompt_tokens
+                        eos_prompt_id = prompt_ids.pop(i)
+                        if(streamer[i]):
+                            ## Generator, yield here..
+                                partial_response_data = {
+                                    "finish_reason": "stop"
+                                }
 
-                            responses[eos_prompt_id] = partial_response_data
-                    else:# Construct the response based on the format
-                        response_data = {
-                            "id": f"chatcmpl-{prompt_id}",
-                            "object": "chat.completion",
-                            "created": int(time.time()),
-                            "model": repo_str,
-                            "choices": [{
-                                "index": 0,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": generated_text,
-                                },
-                                "finish_reason": "stop"
-                            }],
-                            "usage": {
-                                "prompt_tokens": prompt_tokens,
-                                "completion_tokens": completion_tokens,
-                                "total_tokens": full_tokens
+                                responses[eos_prompt_id] = partial_response_data
+                        else:# Construct the response based on the format
+                            response_data = {
+                                "id": f"chatcmpl-{prompt_id}",
+                                "object": "chat.completion",
+                                "created": int(time.time()),
+                                "model": repo_str,
+                                "choices": [{
+                                    "index": 0,
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": generated_text,
+                                    },
+                                    "finish_reason": "stop"
+                                }],
+                                "usage": {
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "total_tokens": full_tokens
+                                }
                             }
-                        }
-                        responses[eos_prompt_id] = response_data
+                            responses[eos_prompt_id] = response_data
+                    except Exception:
+                        generators.pop(i)
+                        input_prompts.pop(i)
+                        generations.pop(i)
+                        caches.pop(i)
+                        streamer.pop(i)
+                        raise Exception("HTTP error")
                     # Clean up
                     generators.pop(i)
                     input_prompts.pop(i)
