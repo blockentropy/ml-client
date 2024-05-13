@@ -5,9 +5,6 @@ import logging
 import time
 import configparser
 import argparse
-import tiktoken
-import torch
-import random
 from typing import AsyncIterable, List, Generator, Union, Optional
 import traceback
 from typing import Mapping
@@ -26,6 +23,8 @@ import queue
 import numpy as np
 
 import sys, os
+assert os.path.exists("./outlines"), "Clone the outlines repository here with git clone https://github.com/outlines-dev/outlines"
+sys.path.append("./outlines")
 import outlines
 from outlines.samplers import multinomial
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
