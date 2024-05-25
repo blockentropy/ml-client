@@ -87,6 +87,7 @@ class ChatCompletionRequest(BaseModel):
     choices: Optional[list[str]] = None
     regex: Optional[str] = None
     json: Optional[str] = None
+    request_id: Optional[str] = None
 
 #repo_str = 'theprofessor-exl2-speculative'
 
@@ -175,6 +176,7 @@ settings_proto.token_repetition_penalty = 1.1
 prompts = queue.Queue()
 responses = {}
 
+stops = []
 input_ids = []
 prompt_length = []
 prompt_ids = []
@@ -203,6 +205,7 @@ class RequestCancelledMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        global stops
         global generators
         global prompt_ids
         global input_prompts
@@ -215,12 +218,20 @@ class RequestCancelledMiddleware:
 
         # Let's make a shared queue for the request messages
         queue = asyncio.Queue()
-
+        cancelled_request_ids = []
         async def message_poller(sentinel, handler_task):
             nonlocal queue
+            request_id = str(generate_unique_id())
             while True:
                 message = await receive()
+                print(message)
+                if "body" in message:
+                    message["body"] = json.loads(message["body"].decode('utf8').replace("'", '"'))
+                    message["body"]["request_id"] = request_id
+                    message["body"] = str.encode(json.dumps(message["body"]))
+                    print(message)
                 if message["type"] == "http.disconnect":
+                    cancelled_request_ids.append(request_id)
                     handler_task.cancel()
                     return sentinel # Break the loop
 
@@ -236,12 +247,18 @@ class RequestCancelledMiddleware:
         except asyncio.CancelledError:
             print("Cancelling request due to disconnect")
             # TODO: FIgure out how to get prompt id that disconnected
-            generators = []
-            prompt_ids = []
-            input_prompts = []
-            generations = []
-            caches = []
-            streamer = []
+            while len(cancelled_request_ids) > 0:
+                cancelled_id = cancelled_request_ids.pop()
+                for i in range(len(prompt_ids)):
+                    if cancelled_id == prompt_ids[i]:
+                        break
+                stops.pop(i)
+                generators.pop(i)
+                prompt_ids.pop(i)
+                input_prompts.pop(i)
+                generations.pop(i)
+                caches.pop(i)
+                streamer.pop(i)
 
 
 app = FastAPI(title="EXL2")
@@ -308,6 +325,7 @@ def process_outline_prompts():
                         generator = outlines.generate.regex(model, outlines_dict["regex"], sampler=sampler)
                     else:
                         generator = outlines.generate.text(model, sampler=sampler)
+                    stops.append(stop_at)
                     generators.append(generator.stream(prompt, stop_at=stop_at, max_tokens=max_tokens))
                     prompt_ids.append(prompt_id)
                     input_prompts.append(prompt)
@@ -327,6 +345,8 @@ def process_outline_prompts():
                             is_finished = True
                         except Exception:
                             raise Exception("HTTP error")
+                        if stops[i] is not None and stops[i] in generations[i]:
+                            is_finished = True
                         reason = None
                         if(streamer[i]):
                             outcontent = decoded_response_token
@@ -399,6 +419,7 @@ def process_outline_prompts():
                             }
                             responses[eos_prompt_id] = response_data
                         # Clean up
+                        stops.pop(i)
                         generators.pop(i)
                         input_prompts.pop(i)
                         generations.pop(i)
@@ -623,7 +644,7 @@ async def mainchat(request: ChatCompletionRequest):
 
         timeout = 180  # seconds
         start_time = time.time()
-        prompt_id = generate_unique_id() # Replace with a function to generate unique IDs
+        prompt_id = request.request_id # Replace with a function to generate unique IDs
         outlines_dict = {}
         if request.stop_at is not None:
             outlines_dict["stop_at"] = request.stop_at
