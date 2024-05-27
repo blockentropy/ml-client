@@ -176,7 +176,6 @@ settings_proto.token_repetition_penalty = 1.1
 prompts = queue.Queue()
 responses = {}
 
-stops = []
 input_ids = []
 prompt_length = []
 prompt_ids = []
@@ -205,7 +204,6 @@ class RequestCancelledMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        global stops
         global generators
         global prompt_ids
         global input_prompts
@@ -252,7 +250,6 @@ class RequestCancelledMiddleware:
                 for i in range(len(prompt_ids)):
                     if cancelled_id == prompt_ids[i]:
                         break
-                stops.pop(i)
                 generators.pop(i)
                 prompt_ids.pop(i)
                 input_prompts.pop(i)
@@ -325,7 +322,6 @@ def process_outline_prompts():
                         generator = outlines.generate.regex(model, outlines_dict["regex"], sampler=sampler)
                     else:
                         generator = outlines.generate.text(model, sampler=sampler)
-                    stops.append(stop_at)
                     generators.append(generator.stream(prompt, stop_at=stop_at, max_tokens=max_tokens))
                     prompt_ids.append(prompt_id)
                     input_prompts.append(prompt)
@@ -345,8 +341,6 @@ def process_outline_prompts():
                             is_finished = True
                         except Exception:
                             raise Exception("HTTP error")
-                        if stops[i] is not None and stops[i] in generations[i]:
-                            is_finished = True
                         reason = None
                         if(streamer[i]):
                             outcontent = decoded_response_token
@@ -419,7 +413,6 @@ def process_outline_prompts():
                             }
                             responses[eos_prompt_id] = response_data
                         # Clean up
-                        stops.pop(i)
                         generators.pop(i)
                         input_prompts.pop(i)
                         generations.pop(i)
