@@ -72,6 +72,7 @@ class Message(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[Message]
+    raw_message: str | None
     stop: Optional[Union[str, List[str]]] = None
     max_tokens: Optional[int] = 100  # default value of 100
     temperature: Optional[float] = 0.0  # default value of 0.0
@@ -616,26 +617,29 @@ async def format_prompt_commandr(messages):
 async def mainchat(request: ChatCompletionRequest):
     try:
         prompt = ''
-        if repo_str == 'Phind-CodeLlama-34B-v2':
-            prompt = await format_prompt_code(request.messages)
-        elif repo_str == 'zephyr-7b-beta':
-            prompt = await format_prompt_zephyr(request.messages)
-        elif repo_str == 'llama3-70b-instruct':
-            prompt = await format_prompt_llama3(request.messages)
-        elif repo_str == 'Starling-LM-7B-alpha':
-            prompt = await format_prompt_starling(request.messages)
-        elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
-            prompt = await format_prompt_mixtral(request.messages)
-        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative' or repo_str == 'dbrx-instruct-exl2':
-            prompt = await format_prompt_yi(request.messages)
-        elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
-            prompt = await format_prompt_nous(request.messages)
-        elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
-            prompt = await format_prompt_tess(request.messages)
-        elif repo_str == 'commandr-exl2' or repo_str == 'commandr-exl2-speculative':
-            prompt = await format_prompt_commandr(request.messages)
+        if request.raw_message is None:
+            if repo_str == 'Phind-CodeLlama-34B-v2':
+                prompt = await format_prompt_code(request.messages)
+            elif repo_str == 'zephyr-7b-beta':
+                prompt = await format_prompt_zephyr(request.messages)
+            elif repo_str == 'llama3-70b-instruct':
+                prompt = await format_prompt_llama3(request.messages)
+            elif repo_str == 'Starling-LM-7B-alpha':
+                prompt = await format_prompt_starling(request.messages)
+            elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+                prompt = await format_prompt_mixtral(request.messages)
+            elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative' or repo_str == 'dbrx-instruct-exl2':
+                prompt = await format_prompt_yi(request.messages)
+            elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
+                prompt = await format_prompt_nous(request.messages)
+            elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
+                prompt = await format_prompt_tess(request.messages)
+            elif repo_str == 'commandr-exl2' or repo_str == 'commandr-exl2-speculative':
+                prompt = await format_prompt_commandr(request.messages)
+            else:
+                prompt = await format_prompt(request.messages)
         else:
-            prompt = await format_prompt(request.messages)
+            prompt = request.raw_message
         print(prompt)
 
         timeout = 180  # seconds
