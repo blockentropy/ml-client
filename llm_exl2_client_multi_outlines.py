@@ -224,7 +224,7 @@ class RequestCancelledMiddleware:
                 message = await receive()
                 print(message)
                 if "body" in message:
-                    message["body"] = json.loads(message["body"].decode('utf8').replace("'", '"'))
+                    message["body"] = json.loads(message["body"].decode('utf8'))
                     message["body"]["request_id"] = request_id
                     message["body"] = str.encode(json.dumps(message["body"]))
                     print(message)
@@ -279,6 +279,52 @@ async def stream_response(prompt_id, timeout=180):
                 yield f'data: {{"id":"chatcmpl-{prompt_id}","object":"chat.completion.chunk","created":{int(time.time())},"model":"{repo_str}","choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
                 break
 
+def process_eos(i):
+    output = generations[i].strip()
+    prompt = input_prompts[i]
+    #output = tokenizer.decode(input_ids[i])[0]
+    print("-----")
+    print(output)
+    generated_text = output
+    # Calculate token counts
+    completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
+    prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
+    full_tokens = completion_tokens + prompt_tokens
+    eos_prompt_id = prompt_ids.pop(i)
+    if(streamer[i]):
+        ## Generator, yield here..
+            partial_response_data = {
+                "finish_reason": "stop"
+            }
+
+            responses[eos_prompt_id] = partial_response_data
+    else:# Construct the response based on the format
+        response_data = {
+            "id": f"chatcmpl-{eos_prompt_id}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": repo_str,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": generated_text,
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": full_tokens
+            }
+        }
+        responses[eos_prompt_id] = response_data
+    # Clean up
+    generators.pop(i)
+    input_prompts.pop(i)
+    generations.pop(i)
+    caches.pop(i)
+    streamer.pop(i)
 # Worker thread function
 def process_outline_prompts():
     global partial_responses
@@ -294,11 +340,11 @@ def process_outline_prompts():
                     sampler = multinomial(top_k=50, top_p=1.0, temperature=temperature)
                     ids = tokenizer.encode(prompt)
                     prompt_tokens = ids.shape[-1]
-                    max_tokens=min(max_tokens, max_context-prompt_tokens)
+                    max_tokens=min(max_tokens, max_context-prompt_tokens-1)
                     full_tokens = prompt_tokens + max_tokens
                     print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
                     # Truncate if new_tokens exceed max_context
-                    if full_tokens > max_context:
+                    if full_tokens >= max_context:
                         # Calculate how many tokens to truncate
                         ids = tokenizer.encode("Say, 'Prompt exceeds allowed length. Please try again.'")
                         # Update new_tokens after truncation
@@ -334,13 +380,12 @@ def process_outline_prompts():
                     for i in range(len(prompt_ids)):
                         model.cache = caches[i]
                         is_finished = False
+                        decoded_response_token = ""
                         try:
                             decoded_response_token = next(generators[i])
                             generations[i] += decoded_response_token
-                        except StopIteration:
-                            is_finished = True
                         except Exception:
-                            raise Exception("HTTP error")
+                            is_finished = True
                         reason = None
                         if(streamer[i]):
                             outcontent = decoded_response_token
@@ -373,57 +418,15 @@ def process_outline_prompts():
 
                     # Generate and store response
                     for i in eos:
-                        output = generations[i].strip()
-                        prompt = input_prompts[i]
-                        #output = tokenizer.decode(input_ids[i])[0]
-                        print("-----")
-                        print(output)
-                        generated_text = output
-                        # Calculate token counts
-                        completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
-                        prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
-                        full_tokens = completion_tokens + prompt_tokens
-                        eos_prompt_id = prompt_ids.pop(i)
-                        if(streamer[i]):
-                            ## Generator, yield here..
-                                partial_response_data = {
-                                    "finish_reason": "stop"
-                                }
-
-                                responses[eos_prompt_id] = partial_response_data
-                        else:# Construct the response based on the format
-                            response_data = {
-                                "id": f"chatcmpl-{prompt_id}",
-                                "object": "chat.completion",
-                                "created": int(time.time()),
-                                "model": repo_str,
-                                "choices": [{
-                                    "index": 0,
-                                    "message": {
-                                        "role": "assistant",
-                                        "content": generated_text,
-                                    },
-                                    "finish_reason": "stop"
-                                }],
-                                "usage": {
-                                    "prompt_tokens": prompt_tokens,
-                                    "completion_tokens": completion_tokens,
-                                    "total_tokens": full_tokens
-                                }
-                            }
-                            responses[eos_prompt_id] = response_data
-                        # Clean up
-                        generators.pop(i)
-                        input_prompts.pop(i)
-                        generations.pop(i)
-                        caches.pop(i)
-                        streamer.pop(i)
+                        process_eos(i)
 
             else:
                 # Sleep for a short duration when there's no work
                 time.sleep(0.1)  # Sleep for 100 milliseconds
-        except:
-            None
+        except Exception as e:
+            for i in range(len(prompt_ids)):
+                process_eos(i)
+            print("Reset server due to ", e)
 
 
 
