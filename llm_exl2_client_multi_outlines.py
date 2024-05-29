@@ -72,7 +72,6 @@ class Message(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[Message]
-    raw_message: str | None
     stop: Optional[Union[str, List[str]]] = None
     max_tokens: Optional[int] = 100  # default value of 100
     temperature: Optional[float] = 0.0  # default value of 0.0
@@ -89,6 +88,7 @@ class ChatCompletionRequest(BaseModel):
     regex: Optional[str] = None
     json: Optional[str] = None
     request_id: Optional[str] = None
+    partial_generation: Optional[str] = None
 
 #repo_str = 'theprofessor-exl2-speculative'
 
@@ -281,6 +281,12 @@ async def stream_response(prompt_id, timeout=180):
                 break
 
 def process_eos(i):
+    global generators
+    global prompt_ids
+    global input_prompts
+    global generations
+    global caches
+    global streamer
     output = generations[i].strip()
     prompt = input_prompts[i]
     #output = tokenizer.decode(input_ids[i])[0]
@@ -329,6 +335,12 @@ def process_eos(i):
 # Worker thread function
 def process_outline_prompts():
     global partial_responses
+    global generators
+    global prompt_ids
+    global input_prompts
+    global generations
+    global caches
+    global streamer
     assert args.use_outlines
     assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
     base_model = model.model
@@ -385,7 +397,8 @@ def process_outline_prompts():
                         try:
                             decoded_response_token = next(generators[i])
                             generations[i] += decoded_response_token
-                        except Exception:
+                        except Exception as e:
+                            print(e)
                             is_finished = True
                         reason = None
                         if(streamer[i]):
@@ -427,6 +440,12 @@ def process_outline_prompts():
         except Exception as e:
             for i in range(len(prompt_ids)):
                 process_eos(i)
+            generators = []
+            prompt_ids = []
+            input_prompts = []
+            generations = []
+            caches = []
+            streamer = []
             print("Reset server due to ", e)
 
 
@@ -617,29 +636,28 @@ async def format_prompt_commandr(messages):
 async def mainchat(request: ChatCompletionRequest):
     try:
         prompt = ''
-        if request.raw_message is None:
-            if repo_str == 'Phind-CodeLlama-34B-v2':
-                prompt = await format_prompt_code(request.messages)
-            elif repo_str == 'zephyr-7b-beta':
-                prompt = await format_prompt_zephyr(request.messages)
-            elif repo_str == 'llama3-70b-instruct':
-                prompt = await format_prompt_llama3(request.messages)
-            elif repo_str == 'Starling-LM-7B-alpha':
-                prompt = await format_prompt_starling(request.messages)
-            elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
-                prompt = await format_prompt_mixtral(request.messages)
-            elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative' or repo_str == 'dbrx-instruct-exl2':
-                prompt = await format_prompt_yi(request.messages)
-            elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
-                prompt = await format_prompt_nous(request.messages)
-            elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
-                prompt = await format_prompt_tess(request.messages)
-            elif repo_str == 'commandr-exl2' or repo_str == 'commandr-exl2-speculative':
-                prompt = await format_prompt_commandr(request.messages)
-            else:
-                prompt = await format_prompt(request.messages)
+        if repo_str == 'Phind-CodeLlama-34B-v2':
+            prompt = await format_prompt_code(request.messages)
+        elif repo_str == 'zephyr-7b-beta':
+            prompt = await format_prompt_zephyr(request.messages)
+        elif repo_str == 'llama3-70b-instruct':
+            prompt = await format_prompt_llama3(request.messages)
+        elif repo_str == 'Starling-LM-7B-alpha':
+            prompt = await format_prompt_starling(request.messages)
+        elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':
+            prompt = await format_prompt_mixtral(request.messages)
+        elif repo_str == 'Yi-34B-Chat-GPTQ' or repo_str == 'Nous-Hermes-2-Yi-34B-GPTQ' or repo_str == 'theprofessor-exl2-speculative' or repo_str == 'dbrx-instruct-exl2':
+            prompt = await format_prompt_yi(request.messages)
+        elif repo_str == 'Nous-Capybara-34B-GPTQ' or repo_str == 'goliath-120b-GPTQ' or repo_str == 'goliath-120b-exl2' or repo_str == 'goliath-120b-exl2-rpcal':
+            prompt = await format_prompt_nous(request.messages)
+        elif repo_str == 'tess-xl-exl2' or repo_str == 'tess-xl-exl2-speculative':
+            prompt = await format_prompt_tess(request.messages)
+        elif repo_str == 'commandr-exl2' or repo_str == 'commandr-exl2-speculative':
+            prompt = await format_prompt_commandr(request.messages)
         else:
-            prompt = request.raw_message
+            prompt = await format_prompt(request.messages)
+        if request.partial_generation is not None:
+            prompt += request.partial_generation
         print(prompt)
 
         timeout = 180  # seconds
