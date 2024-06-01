@@ -88,6 +88,7 @@ class ChatCompletionRequest(BaseModel):
     regex: Optional[str] = None
     json: Optional[str] = None
     request_id: Optional[str] = None
+    partial_generation: Optional[str] = None
 
 #repo_str = 'theprofessor-exl2-speculative'
 
@@ -280,6 +281,12 @@ async def stream_response(prompt_id, timeout=180):
                 break
 
 def process_eos(i):
+    global generators
+    global prompt_ids
+    global input_prompts
+    global generations
+    global caches
+    global streamer
     output = generations[i].strip()
     prompt = input_prompts[i]
     #output = tokenizer.decode(input_ids[i])[0]
@@ -328,6 +335,12 @@ def process_eos(i):
 # Worker thread function
 def process_outline_prompts():
     global partial_responses
+    global generators
+    global prompt_ids
+    global input_prompts
+    global generations
+    global caches
+    global streamer
     assert args.use_outlines
     assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
     base_model = model.model
@@ -384,7 +397,8 @@ def process_outline_prompts():
                         try:
                             decoded_response_token = next(generators[i])
                             generations[i] += decoded_response_token
-                        except Exception:
+                        except Exception as e:
+                            print(e)
                             is_finished = True
                         reason = None
                         if(streamer[i]):
@@ -426,6 +440,12 @@ def process_outline_prompts():
         except Exception as e:
             for i in range(len(prompt_ids)):
                 process_eos(i)
+            generators = []
+            prompt_ids = []
+            input_prompts = []
+            generations = []
+            caches = []
+            streamer = []
             print("Reset server due to ", e)
 
 
@@ -636,6 +656,8 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_commandr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
+        if request.partial_generation is not None:
+            prompt += request.partial_generation
         print(prompt)
 
         timeout = 180  # seconds
