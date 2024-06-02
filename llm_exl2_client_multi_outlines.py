@@ -664,6 +664,11 @@ async def mainchat(request: ChatCompletionRequest):
         start_time = time.time()
         prompt_id = request.request_id # Replace with a function to generate unique IDs
         outlines_dict = {}
+        
+        # Adjust temperature if it is 0
+        if request.temperature == 0:
+            request.temperature = 0.001
+
         if request.stop_at is not None:
             outlines_dict["stop_at"] = request.stop_at
         if request.outlines_type is not None:
