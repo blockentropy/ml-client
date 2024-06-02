@@ -48,29 +48,102 @@ import uuid
 def generate_unique_id():
     return uuid.uuid4()
 
-# Inspired by https://arxiv.org/pdf/2312.07104 but way more primitive for now
-class StoredKVCaches:
-    def __init__(self, num_caches: int =100):
-        self.data = {}
-        self.num_caches = num_caches
-    def insert(self, prompt: str, cache):
-        num_items = len(self.data)
-        # can probably use priority queue to optimize
-        if num_items == self.num_caches:
-            least_utilized_key = ""
-            min_count = 1e10
-            for key in self.data:
-                used_num = self.data[key][0]
-                if used_num < min_count:
-                    min_count = used_num
-                    least_utilized_key = key
-            del self.data[least_utilized_key]
-        self.data[prompt] = [0, cache]
-    def get(self, prompt: str):
-        hits_and_cache = self.data.get(prompt, None)
-        hits_and_cache[0] += 1
-        return hits_and_cache[1]
+# Taken from https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/managers/controller/radix_cache.py
+import heapq
+import time
+from collections import defaultdict
 
+class TreeNode:
+    def __init__(self):
+        self.children = defaultdict(TreeNode)
+        self.parent = None
+        self.key = None
+        self.value = None
+        self.last_access_time = time.time()
+
+    def __lt__(self, other: "TreeNode"):
+        return self.last_access_time < other.last_access_time
+
+# Inspired by https://arxiv.org/pdf/2312.07104 but way more primitive for now
+class RadixCache:
+    def __init__(self, total_tokens: int =12288):
+        self.total_tokens = total_tokens
+        self.reset()
+        self.total_size = 0
+    def reset(self):
+        self.root_node = TreeNode()
+        self.root_node.key = []
+        self.root_node.value = []
+        self.evictable_size_ = 0
+    def evict(self):
+        num_tokens = self.total_size - self.total_seq_len:
+        leaves = self._collect_leaves()
+
+        heapq.heapify(leaves)
+        num_evicted = 0
+        while num_evicted < num_tokens and len(leaves):
+            x = heapq.heappop(leaves)
+
+            if x == self.root_node:
+                break
+            if x.lock_ref > 0:
+                continue
+
+            num_evicted += x.value.max_seq_len if x is not None else 0
+            self._delete_leaf(x)
+
+            if len(x.parent.children) == 0:
+                heapq.heappush(leaves, x.parent)
+    def insert(self, prompt: str, cache):
+        # change below logic to keep cache under certain amount of tokens
+        self.total_size += cache.max_seq_len
+        # can probably use priority queue to optimize
+        if self.total_size > self.total_seq_len:
+            self.evict()
+        self._insert_helper(self.root_node, prompt, cache)
+    def _collect_leaves(self):
+        ret_list = []
+
+        def dfs_(cur_node):
+            if len(cur_node.children) == 0:
+                ret_list.append(cur_node)
+
+            for x in cur_node.children.values():
+                dfs_(x)
+
+        dfs_(self.root_node)
+        return ret_list
+    def _delete_leaf(self, node):
+        for k, v in node.parent.children.items():
+            if v == node:
+                break
+        del node.parent.children[k]
+    def _insert_helper(self, node, prompt, cache):
+        node.last_access_time = time.time()
+        if len(key) == 0:
+            return 0
+        for key in node.children:
+            if prompt.startswith(key):
+                return self._insert_helper(node.children[key], prompt, cache)
+        # reached node which will be parent
+
+        new_node = TreeNode()
+        new_node.parent = node
+        new_node.key = prompt
+        new_node.value = cache
+        node.children[prompt] = new_node
+        return 0
+    def get(self, prompt):
+        return self._get_helper(self.root_node, prompt)
+    def _get_helper(self, node, prompt):
+        node.last_access_time = time.time()
+        if len(prompt) == 0:
+            return None
+        for key in node.children:
+            if prompt.startswith(key):
+                return self._get_helper(node.children[key], prompt)
+        # this will be the last node which will match the prompt
+        return node
 
 class CompletionRequest(BaseModel):
     model: str
@@ -134,7 +207,7 @@ args = parser.parse_args()
 
 radix_cache = None
 if not args.dont_store_kv_cache:
-    radix_cache = StoredKVCaches(100)
+    radix_cache = RadixCache(122880)
 
 repo_str = args.repo_str
 
@@ -395,7 +468,10 @@ def process_outline_prompts():
                         prompt_tokens = ids.shape[-1]
                         full_tokens = prompt_tokens + max_tokens
                         print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
-                    if radix_cache is None or radix_cache.get(prompt) is None:
+                    precomputed_cache_node = None
+                    if radix_cache is None:
+                        precomputed_cache_node = radix_cache.get(prompt)
+                    if precomputed_cache_node is None:
                         if cache_8bit:
                             ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                         elif cache_q4:
@@ -415,7 +491,16 @@ def process_outline_prompts():
                         if radix_cache is not None:
                             radix_cache.insert(prompt, copy.deepcopy(model.cache))
                     else:
-                        model.cache = radix_cache.get(prompt)
+                        model.cache = precomputed_cache_node.cache
+                        if prompt != precomputed_cache_node.prompt:
+                            model.model.forward(
+                                ids[:-1].view(1, -1),
+                                model.cache,
+                                preprocess_only=True,
+                                loras=[model.lora],
+                            )
+                            radix_cache.insert(prompt, copy.deepcopy(model.cache))
+
 
                     model.past_seq = ids
                     stop_at = outlines_dict.get("stop_at", None)
