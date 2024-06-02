@@ -15,7 +15,7 @@ import requests
 import sseclient
 import subprocess
 import re
-
+import copy
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -47,6 +47,28 @@ import uuid
 
 def generate_unique_id():
     return uuid.uuid4()
+
+# Inspired by https://arxiv.org/pdf/2312.07104 but way more primitive for now
+class StoredKVCaches:
+    def __init__(self, num_caches: int =100):
+        self.data = {}
+        self.num_caches = num_caches
+    def insert(self, prompt: str, cache):
+        num_items = len(self.data)
+        # can probably use priority queue to optimize
+        if num_items == self.num_caches:
+            least_utilized_key = ""
+            min_count = 1e10
+            for key in self.data:
+                used_num = self.data[key][0]
+                if used_num < min_count:
+                    min_count = used_num
+                    least_utilized_key = key
+            del self.data[least_utilized_key]
+        self.data[prompt] = cache
+    def get(self, prompt: str):
+        return self.data.get(prompt, None)
+
 
 class CompletionRequest(BaseModel):
     model: str
@@ -103,9 +125,15 @@ parser.add_argument('--cache_8bit', action='store_true', help='Use 8 bit cache.'
 parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
 parser.add_argument('--repo_str', type=str, default='llama3-70b-instruct', help='The model repository name')
 parser.add_argument('--outlines_device', type=int, default=2, help='The cuda device to which the outlines device is set')
+parser.add_argument('--dont_store_kv_cache', action='store_true', help='Do not store kv cache of past prompts')
 
 # Parse the arguments
 args = parser.parse_args()
+
+radix_cache = None
+if not args.dont_store_kv_cache:
+    radix_cache = StoredKVCaches(100)
+
 repo_str = args.repo_str
 
 config = configparser.ConfigParser()
@@ -341,6 +369,7 @@ def process_outline_prompts():
     global generations
     global caches
     global streamer
+    global radix_cache
     assert args.use_outlines
     assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
     base_model = model.model
@@ -364,14 +393,29 @@ def process_outline_prompts():
                         prompt_tokens = ids.shape[-1]
                         full_tokens = prompt_tokens + max_tokens
                         print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
-                    if cache_8bit:
-                        ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
-                    elif cache_q4:
-                        ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)
+                    if radix_cache is None or radix_cache.get(prompt) is None:
+                        if cache_8bit:
+                            ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
+                        elif cache_q4:
+                            ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)
+                        else:
+                            ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
+                        model.cache = ncache
+                        # preprocessing
+                        model.cache.current_seq_len = 0
+                        if ids.shape[0] > 1:
+                            model.model.forward(
+                                ids[:-1].view(1, -1),
+                                model.cache,
+                                preprocess_only=True,
+                                loras=[model.lora],
+                            )
+                        if radix_cache is not None:
+                            radix_cache.insert(prompt, copy.deepcopy(model.cache))
                     else:
-                        ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
-                    model.cache = ncache
-                    model.past_seq = None
+                        model.cache = radix_cache.get(prompt)
+
+                    model.past_seq = ids
                     stop_at = outlines_dict.get("stop_at", None)
                     if outlines_dict["type"] == "choices":
                         generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler)
@@ -400,6 +444,8 @@ def process_outline_prompts():
                         except Exception as e:
                             print(e)
                             is_finished = True
+                            if radix_cache is not None:
+                                radix_cache.insert(generations[i], copy.deepcopy(model.cache))
                         reason = None
                         if(streamer[i]):
                             outcontent = decoded_response_token
