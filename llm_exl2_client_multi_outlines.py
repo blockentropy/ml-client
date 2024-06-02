@@ -65,9 +65,11 @@ class StoredKVCaches:
                     min_count = used_num
                     least_utilized_key = key
             del self.data[least_utilized_key]
-        self.data[prompt] = cache
+        self.data[prompt] = [0, cache]
     def get(self, prompt: str):
-        return self.data.get(prompt, None)
+        hits_and_cache = self.data.get(prompt, None)
+        hits_and_cache[0] += 1
+        return hits_and_cache[1]
 
 
 class CompletionRequest(BaseModel):
