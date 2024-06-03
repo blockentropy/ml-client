@@ -61,6 +61,7 @@ class TreeNode:
         self.parent = None
         self.key = None
         self.value = None
+        self.lock_ref = 0
         self.last_access_time = time.time()
 
     def __lt__(self, other: "TreeNode"):
@@ -76,6 +77,7 @@ class RadixCache:
         self.root_node = TreeNode()
         self.root_node.key = None
         self.root_node.value = None
+        self.root_node.lock_ref = 1
         self.evictable_size_ = 0
     def evict(self):
         print("evicting")
@@ -97,9 +99,11 @@ class RadixCache:
 
             if len(x.parent.children) == 0:
                 heapq.heappush(leaves, x.parent)
+        self.total_size -= num_evicted
     def insert(self, prompt: str, cache):
         # change below logic to keep cache under certain amount of tokens
         self.total_size += cache.max_seq_len
+        print("Insert and current total size ", self.total_size)
         # can probably use priority queue to optimize
         if self.total_size > self.total_tokens:
             self.evict()
@@ -211,13 +215,14 @@ parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
 parser.add_argument('--repo_str', type=str, default='llama3-70b-instruct', help='The model repository name')
 parser.add_argument('--outlines_device', type=int, default=2, help='The cuda device to which the outlines device is set')
 parser.add_argument('--dont_store_kv_cache', action='store_true', help='Do not store kv cache of past prompts')
+parser.add_argument('--max_cache_size', type=int, default=122880, help='Context length.')
 
 # Parse the arguments
 args = parser.parse_args()
 
 radix_cache = None
 if not args.dont_store_kv_cache:
-    radix_cache = RadixCache(122880)
+    radix_cache = RadixCache(args.max_cache_size)
 
 repo_str = args.repo_str
 
