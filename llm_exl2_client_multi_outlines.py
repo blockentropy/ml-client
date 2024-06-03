@@ -43,6 +43,8 @@ from exllamav2.generator import (
     ExLlamaV2StreamingGenerator,
     ExLlamaV2Sampler
 )
+import traceback
+
 import uuid
 
 def generate_unique_id():
@@ -72,11 +74,12 @@ class RadixCache:
         self.total_size = 0
     def reset(self):
         self.root_node = TreeNode()
-        self.root_node.key = []
-        self.root_node.value = []
+        self.root_node.key = None
+        self.root_node.value = None
         self.evictable_size_ = 0
     def evict(self):
-        num_tokens = self.total_size - self.total_seq_len:
+        print("evicting")
+        num_tokens = self.total_size - self.total_tokens
         leaves = self._collect_leaves()
 
         heapq.heapify(leaves)
@@ -98,7 +101,7 @@ class RadixCache:
         # change below logic to keep cache under certain amount of tokens
         self.total_size += cache.max_seq_len
         # can probably use priority queue to optimize
-        if self.total_size > self.total_seq_len:
+        if self.total_size > self.total_tokens:
             self.evict()
         self._insert_helper(self.root_node, prompt, cache)
     def _collect_leaves(self):
@@ -120,13 +123,13 @@ class RadixCache:
         del node.parent.children[k]
     def _insert_helper(self, node, prompt, cache):
         node.last_access_time = time.time()
-        if len(key) == 0:
+        if len(prompt) == 0:
             return 0
         for key in node.children:
             if prompt.startswith(key):
                 return self._insert_helper(node.children[key], prompt, cache)
         # reached node which will be parent
-
+        # print("Inserting ", prompt)
         new_node = TreeNode()
         new_node.parent = node
         new_node.key = prompt
@@ -139,11 +142,18 @@ class RadixCache:
         node.last_access_time = time.time()
         if len(prompt) == 0:
             return None
+        print(len(node.children))
         for key in node.children:
             if prompt.startswith(key):
                 return self._get_helper(node.children[key], prompt)
         # this will be the last node which will match the prompt
         return node
+    def print_cache(self):
+        self._print_helper(self.root_node)
+    def _print_helper(self, node, prefix="-"):
+        for key in node.children:
+            print(prefix+key)
+            self._print_helper(node.children[key], prefix+"-")
 
 class CompletionRequest(BaseModel):
     model: str
@@ -326,12 +336,10 @@ class RequestCancelledMiddleware:
             request_id = str(generate_unique_id())
             while True:
                 message = await receive()
-                print(message)
                 if "body" in message:
                     message["body"] = json.loads(message["body"].decode('utf8'))
                     message["body"]["request_id"] = request_id
                     message["body"] = str.encode(json.dumps(message["body"]))
-                    print(message)
                 if message["type"] == "http.disconnect":
                     cancelled_request_ids.append(request_id)
                     handler_task.cancel()
@@ -392,9 +400,6 @@ def process_eos(i):
     global streamer
     output = generations[i].strip()
     prompt = input_prompts[i]
-    #output = tokenizer.decode(input_ids[i])[0]
-    print("-----")
-    print(output)
     generated_text = output
     # Calculate token counts
     completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
@@ -445,6 +450,7 @@ def process_outline_prompts():
     global caches
     global streamer
     global radix_cache
+    global args
     assert args.use_outlines
     assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
     base_model = model.model
@@ -469,15 +475,27 @@ def process_outline_prompts():
                         full_tokens = prompt_tokens + max_tokens
                         print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
                     precomputed_cache_node = None
-                    if radix_cache is None:
+                    # print("Cache: ")
+                    # radix_cache.print_cache()
+                    if radix_cache is not None:
                         precomputed_cache_node = radix_cache.get(prompt)
-                    if precomputed_cache_node is None:
+                    if precomputed_cache_node is None or precomputed_cache_node.value is None:
                         if cache_8bit:
                             ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
                         elif cache_q4:
                             ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)
                         else:
                             ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
+                        # print(len(ncache.key_states), len(ncache.value_states))
+                        # for i in range(len(ncache.key_states)):
+                        #     print(ncache.key_states[i].device, ncache.value_states[i].device)
+                        # if ncache.has_scales:
+                        #     print(len(ncache.key_scales), len(ncache.value_scales))
+                        #     for i in range(len(ncache.key_scales)):
+                        #         print(ncache.key_scales[i].device, ncache.value_scales[i].device)
+                        # if hasattr(ncache, "temp_tensors"):
+                        #     print(ncache.temp_tensors.keys())
+
                         model.cache = ncache
                         # preprocessing
                         model.cache.current_seq_len = 0
@@ -489,20 +507,20 @@ def process_outline_prompts():
                                 loras=[model.lora],
                             )
                         if radix_cache is not None:
-                            radix_cache.insert(prompt, copy.deepcopy(model.cache))
+                            radix_cache.insert(prompt, model.cache.clone())
                     else:
-                        model.cache = precomputed_cache_node.cache
-                        if prompt != precomputed_cache_node.prompt:
+                        model.cache = precomputed_cache_node.value
+                        print("Hit ", precomputed_cache_node.key)
+                        if prompt != precomputed_cache_node.key:
                             model.model.forward(
                                 ids[:-1].view(1, -1),
                                 model.cache,
                                 preprocess_only=True,
                                 loras=[model.lora],
                             )
-                            radix_cache.insert(prompt, copy.deepcopy(model.cache))
+                            radix_cache.insert(prompt, model.cache.clone())
 
-
-                    model.past_seq = ids
+                    model.past_seq = ids[0].to(f"cuda:{args.outlines_device}")
                     stop_at = outlines_dict.get("stop_at", None)
                     if outlines_dict["type"] == "choices":
                         generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler)
@@ -530,9 +548,10 @@ def process_outline_prompts():
                             generations[i] += decoded_response_token
                         except Exception as e:
                             print(e)
+                            print(traceback.format_exc())
                             is_finished = True
                             if radix_cache is not None:
-                                radix_cache.insert(generations[i], copy.deepcopy(model.cache))
+                                radix_cache.insert(generations[i], model.cache.clone())
                         reason = None
                         if(streamer[i]):
                             outcontent = decoded_response_token
@@ -580,6 +599,7 @@ def process_outline_prompts():
             caches = []
             streamer = []
             print("Reset server due to ", e)
+            print(traceback.format_exc())
 
 
 
