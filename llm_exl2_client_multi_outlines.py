@@ -510,7 +510,7 @@ def process_outline_prompts():
                             radix_cache.insert(prompt, model.cache.clone())
                     else:
                         model.cache = precomputed_cache_node.value
-                        print("Hit ", precomputed_cache_node.key)
+                        print("hit")
                         if prompt != precomputed_cache_node.key:
                             model.model.forward(
                                 ids[:-1].view(1, -1),
