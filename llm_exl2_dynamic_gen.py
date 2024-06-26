@@ -299,6 +299,7 @@ generator = ExLlamaV2DynamicGenerator(
 prompts = queue.Queue()
 responses = {}
 input_ids = []
+prompt_length = []
 # Global variable for storing partial responses
 partial_responses = {}
 
@@ -393,7 +394,7 @@ def process_prompts():
                     prompt_tokens = ids.shape[-1]
                     new_tokens = prompt_tokens + max_tokens
                     print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                #prompt_length.append(prompt_tokens)
+                prompt_length.append(prompt_tokens)
                 input_ids.append(ids)
                 #streamer.append(stream)
                 #prompt_ids.append(prompt_id)
@@ -514,7 +515,7 @@ def process_prompts():
 
                         # Clean up
                         input_ids.pop()
-                        #prompt_length.pop(i)
+                        prompt_length.pop()
                         #streamer.pop(i)
 
         else:
