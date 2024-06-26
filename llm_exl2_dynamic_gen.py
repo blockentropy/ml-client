@@ -33,6 +33,7 @@ import threading
 from threading import Thread
 import queue
 import uvicorn
+from io import StringIO
 
 def generate_unique_id():
     return uuid.uuid4()
@@ -212,11 +213,11 @@ if use_draft_model:
     draft_model_dir = specrepo_id
 
 # Max number of batches to run at once, assuming the sequences will fit within total_context.
-max_batch_size = 20 if paged else 1
+max_batch_size = 6 if paged else 1
 
 # Max chunk size. Determines the size of prefill operations. Can be reduced to reduce pauses whenever a
 # new job is started, but at the expense of overall prompt ingestion speed.
-max_chunk_size = 2048
+max_chunk_size = 1024
 
 # Max new tokens per completion. For this example applies to all jobs.
 max_new_tokens = 2048
@@ -297,16 +298,11 @@ generator = ExLlamaV2DynamicGenerator(
 # Active sequences and corresponding caches and settings
 prompts = queue.Queue()
 responses = {}
-
+input_ids = []
 # Global variable for storing partial responses
 partial_responses = {}
 
 # Create jobs
-jobs = []
-input_ids = []
-prompt_length = []
-prompt_ids = []
-streamer = []
 STATUS_LINES = 40  # Number of lines to dedicate for status messages
 LLM_LINES = max_batch_size
 status_area = StatusArea(STATUS_LINES)
@@ -397,10 +393,10 @@ def process_prompts():
                     prompt_tokens = ids.shape[-1]
                     new_tokens = prompt_tokens + max_tokens
                     print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                prompt_length.append(prompt_tokens)
+                #prompt_length.append(prompt_tokens)
                 input_ids.append(ids)
-                streamer.append(stream)
-                prompt_ids.append(prompt_id)
+                #streamer.append(stream)
+                #prompt_ids.append(prompt_id)
                 
                 job = ExLlamaV2DynamicJob(
                     input_ids = ids,
@@ -413,35 +409,37 @@ def process_prompts():
                     token_healing = healing
                 )
                 
+                job.prompt_length = prompt_tokens
+                job.input_ids = ids
+                job.streamer = stream
+                job.prompt_ids = prompt_id
+
                 generator.enqueue(job)
                 #displays = { job: JobStatusDisplay(job, line, STATUS_LINES) for line, job in enumerate(jobs) }
                 displays[job] = JobStatusDisplay(job, STATUS_LINES)
 
                 for index, (job, display) in enumerate(list(displays.items())):
                     display.update_position(index%LLM_LINES)  # Set position before updating
-                    display.display()  # Actually print the display
                 
    
             if(len(input_ids)):
                 #inputs = torch.cat([x[:, -1:] for x in input_ids], dim = 0)
                 #logits = model.forward(inputs, caches, input_mask = None).float().cpu()
-                eos = []
                 
                 results = generator.iterate()
-                #for r in results:
-                for i in range(len(input_ids)):
-                    r = results[i]
-                    if display_mode == 1:
-                        job = r["job"]
-                        displays[job].update(r)
-                        displays[job].display()
+                for r in results:
+                #for i in range(len(input_ids)):
+                    #r = results[i]
+                    job = r["job"]
+                    displays[job].update(r)
+                    displays[job].display()
                     stage = r["stage"]
                     stage = r.get("eos_reason", stage)
                     outcontent = r.get("text", "")
                     reason = None
-                    if(streamer[i]):
+                    if(job.streamer):
                         partial_response_data = {
-                                "id": f"chatcmpl-{prompt_ids[i]}",
+                                "id": f"chatcmpl-{job.prompt_ids}",
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
                                 "model": repo_str,
@@ -457,62 +455,59 @@ def process_prompts():
                             }
 
                         # Initialize a list for new prompt_id or append to existing one
-                        if prompt_ids[i] not in partial_responses:
-                            partial_responses[prompt_ids[i]] = []
-                        partial_responses[prompt_ids[i]].append(partial_response_data)
+                        if job.prompt_ids not in partial_responses:
+                            partial_responses[job.prompt_ids] = []
+                        partial_responses[job.prompt_ids].append(partial_response_data)
 
                     if r['eos'] == True:
                         total_time = r['time_generate']
                         total_tokens = r['new_tokens']
                         tokens_per_second = total_tokens / total_time if total_time > 0 else 0
                         status_area.update(f"EOS detected: {stage}, Generated Tokens: {total_tokens}, Tokens per second: {tokens_per_second}/s", line=STATUS_LINES-2)
-                        eos.insert(0, i)
-                        
-                # Generate and store response
-                for i in eos:
-                    generated_part = input_ids[i][:, prompt_length[i]:]
-                    output = tokenizer.decode(generated_part[0]).strip()
-                    #output = tokenizer.decode(input_ids[i])[0]
-                    generated_text = output
-                    # Calculate token counts
-                    completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
-                    prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
-                    full_tokens = completion_tokens + prompt_tokens
-                    eos_prompt_id = prompt_ids.pop(i)
-                    if(streamer[i]):
-                        ## Generator, yield here..
-                            partial_response_data = {
-                                "finish_reason": "stop"
-                            }
 
-                            responses[eos_prompt_id] = partial_response_data
-                    else:# Construct the response based on the format
-                        response_data = {
-                            "id": f"chatcmpl-{prompt_id}",
-                            "object": "chat.completion",
-                            "created": int(time.time()),
-                            "model": repo_str,
-                            "choices": [{
-                                "index": 0,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": generated_text,
-                                },
-                                "finish_reason": "stop"
-                            }],
-                            "usage": {
-                                "prompt_tokens": prompt_tokens,
-                                "completion_tokens": completion_tokens,
-                                "total_tokens": full_tokens
-                            }
-                        }
-                        
-                        responses[eos_prompt_id] = response_data
+                        generated_part = job.input_ids[:, job.prompt_length:]
+                        output = tokenizer.decode(generated_part[0]).strip()
+                        #output = tokenizer.decode(input_ids[i])[0]
+                        generated_text = output
+                        # Calculate token counts
+                        completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
+                        prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
+                        full_tokens = completion_tokens + prompt_tokens
+                        eos_prompt_id = job.prompt_ids
+                        if(job.streamer):
+                            ## Generator, yield here..
+                                partial_response_data = {
+                                    "finish_reason": "stop"
+                                }
 
-                    # Clean up
-                    input_ids.pop(i)
-                    prompt_length.pop(i)
-                    streamer.pop(i)
+                                responses[eos_prompt_id] = partial_response_data
+                        else:# Construct the response based on the format
+                            response_data = {
+                                "id": f"chatcmpl-{prompt_id}",
+                                "object": "chat.completion",
+                                "created": int(time.time()),
+                                "model": repo_str,
+                                "choices": [{
+                                    "index": 0,
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": generated_text,
+                                    },
+                                    "finish_reason": "stop"
+                                }],
+                                "usage": {
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "total_tokens": full_tokens
+                                }
+                            }
+                            
+                            responses[eos_prompt_id] = response_data
+
+                        # Clean up
+                        input_ids.pop()
+                        #prompt_length.pop(i)
+                        #streamer.pop(i)
 
         else:
             # Sleep for a short duration when there's no work
@@ -752,18 +747,11 @@ async def get_nvidia_smi():
     return gpu_data
 
 
-def run_uvicorn_server():
-    config = uvicorn.Config(app, host=host, port=port, log_config=None)
-    server = uvicorn.Server(config)
-    server.run()
-
 if __name__ == "__main__":
 
-    # Start Uvicorn server in a separate thread
-    server_thread = threading.Thread(target=run_uvicorn_server)
-    server_thread.daemon = True
-    server_thread.start()
-    #uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, log_level="error")
+
     print(term.enter_fullscreen())
+    
 
     
