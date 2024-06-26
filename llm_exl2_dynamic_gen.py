@@ -21,6 +21,8 @@ from typing import AsyncIterable, List, Generator, Union, Optional
 import requests
 import sseclient
 import subprocess
+import textwrap
+
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,17 +80,31 @@ class StatusArea:
         self.num_lines = num_lines
         self.messages = [""] * num_lines
 
-    def update(self, message, line=0):
-        if 0 <= line < self.num_lines:
-            self.messages[line] = message
+    def update(self, message, line=None):
+        if line is not None:
+            # Update a specific line
+            if 0 <= line < self.num_lines:
+                self.messages[line] = message
+        else:
+            # Handle multi-line message
+            lines = message.split('\n')
+            if len(lines) > self.num_lines:
+                # Truncate to last num_lines if exceeds num_lines
+                lines = lines[-self.num_lines:]
+            
+            # Update messages, padding with empty strings if necessary
+            self.messages = lines + [""] * (self.num_lines - len(lines))
+
         self.display()
 
     def display(self):
         for i, message in enumerate(self.messages):
-            print(term.move_xy(0, i) + term.clear_eol + message)
+            wrapped_message = textwrap.shorten(message, width=term.width, placeholder="...")
+            print(term.move_xy(0, i) + term.clear_eol + wrapped_message)
         
         # Move cursor below the status area
         print(term.move_xy(0, self.num_lines), end='', flush=True)
+
 
 class JobStatusDisplay:
 
@@ -209,7 +225,7 @@ max_new_tokens = 2048
 json_mode = False
 
 # Demonstrate token healing
-healing = False
+healing = True
 
 # Ban some phrases maybe
 ban_strings = None
@@ -291,7 +307,8 @@ input_ids = []
 prompt_length = []
 prompt_ids = []
 streamer = []
-STATUS_LINES = 3  # Number of lines to dedicate for status messages
+STATUS_LINES = 40  # Number of lines to dedicate for status messages
+LLM_LINES = max_batch_size
 status_area = StatusArea(STATUS_LINES)
 displays = {}
 
@@ -367,11 +384,11 @@ def process_prompts():
                     ]
                 else:
                     filters = None
-                ids = tokenizer.encode(prompt, encode_special_tokens = False)
+                ids = tokenizer.encode(prompt, encode_special_tokens = True)
                 prompt_tokens = ids.shape[-1]
                 new_tokens = prompt_tokens + max_tokens
                 #print("Processing prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                status_area.update(f"Processing prompt: {prompt_id}  Req tokens: {new_tokens}", line=1)
+                status_area.update(f"Processing prompt: {prompt_id}  Req tokens: {new_tokens}", line=STATUS_LINES-1)
                 # Truncate if new_tokens exceed max_context
                 if new_tokens > max_context:
                     # Calculate how many tokens to truncate
@@ -400,11 +417,8 @@ def process_prompts():
                 #displays = { job: JobStatusDisplay(job, line, STATUS_LINES) for line, job in enumerate(jobs) }
                 displays[job] = JobStatusDisplay(job, STATUS_LINES)
 
-                if len(displays) > 20:
-                    oldest_job = next(iter(displays))
-                    del displays[oldest_job]
                 for index, (job, display) in enumerate(list(displays.items())):
-                    display.update_position(index)  # Set position before updating
+                    display.update_position(index%LLM_LINES)  # Set position before updating
                     display.display()  # Actually print the display
                 
    
@@ -448,7 +462,10 @@ def process_prompts():
                         partial_responses[prompt_ids[i]].append(partial_response_data)
 
                     if r['eos'] == True:
-                        status_area.update(f"EOS detected: {stage}", line=0)
+                        total_time = r['time_generate']
+                        total_tokens = r['new_tokens']
+                        tokens_per_second = total_tokens / total_time if total_time > 0 else 0
+                        status_area.update(f"EOS detected: {stage}, Generated Tokens: {total_tokens}, Tokens per second: {tokens_per_second}/s", line=STATUS_LINES-2)
                         eos.insert(0, i)
                         
                 # Generate and store response
@@ -681,7 +698,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_zephyr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
-        #status_area.update(f"Prompt: {prompt}", line=0)
+        status_area.update(f"Prompt: {prompt}")
 
         timeout = 180  # seconds
         start_time = time.time()
