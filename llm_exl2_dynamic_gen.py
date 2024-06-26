@@ -217,7 +217,7 @@ max_batch_size = 6 if paged else 1
 
 # Max chunk size. Determines the size of prefill operations. Can be reduced to reduce pauses whenever a
 # new job is started, but at the expense of overall prompt ingestion speed.
-max_chunk_size = 1024
+max_chunk_size = 2048
 
 # Max new tokens per completion. For this example applies to all jobs.
 max_new_tokens = 2048
@@ -465,14 +465,22 @@ def process_prompts():
                         tokens_per_second = total_tokens / total_time if total_time > 0 else 0
                         status_area.update(f"EOS detected: {stage}, Generated Tokens: {total_tokens}, Tokens per second: {tokens_per_second}/s", line=STATUS_LINES-2)
 
-                        generated_part = job.input_ids[:, job.prompt_length:]
-                        output = tokenizer.decode(generated_part[0]).strip()
+                        #generated_part = job.input_ids[:, job.prompt_length:]
+                        #output = tokenizer.decode(generated_part[0]).strip()
                         #output = tokenizer.decode(input_ids[i])[0]
-                        generated_text = output
+                        generated_text = r['full_completion']
+
                         # Calculate token counts
-                        completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
-                        prompt_tokens = (tokenizer.encode(prompt)).shape[-1]
+                        completion_tokens_old = (tokenizer.encode(generated_text)).shape[-1]
+                        prompt_tokens_old = (tokenizer.encode(prompt)).shape[-1]
+
+                        completion_tokens = r['new_tokens']
+                        prompt_tokens = r['prompt_tokens']
+
                         full_tokens = completion_tokens + prompt_tokens
+                        status_area.update(f"Completion Tokens: {completion_tokens_old}, New Completion Tokens: {completion_tokens}", line=STATUS_LINES-3)
+
+
                         eos_prompt_id = job.prompt_ids
                         if(job.streamer):
                             ## Generator, yield here..
