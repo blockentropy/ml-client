@@ -34,14 +34,14 @@ from threading import Thread
 import queue
 import uvicorn
 from io import StringIO
-from util import format_prompt_llama3, format_prompt
+from util import format_prompt_llama3, format_prompt, format_prompt_tess
 from util_merge import ExLlamaV2MergePassthrough
 
 def generate_unique_id():
     return uuid.uuid4()
 
 # This is a demo and small stress to showcase some of the features of the dynamic batching generator.
-repo_str = 'llama3-70b-instruct-speculative'
+repo_str = 'tess-xl-exl2-speculative'
 
 class CompletionRequest(BaseModel):
     model: str
@@ -205,11 +205,11 @@ model_dir = repo_id
 total_context = 32768
 
 # Max individual context
-max_context = 8192
+max_context = 12288
 
 # N-gram or draft model speculative decoding. Largely detrimental to performance at higher batch sizes.
 use_ngram = False
-use_draft_model = False
+use_draft_model = False 
 if use_draft_model:
     model_dir = repo_id
     draft_model_dir = specrepo_id
@@ -243,9 +243,11 @@ term = Terminal()
 if use_draft_model:
 
     draft_config = ExLlamaV2Config(draft_model_dir)
+    draft_config.scale_alpha_value = 6.0
+    draft_config.max_seq_len = max_context
     draft_model = ExLlamaV2(draft_config)
 
-    draft_cache = ExLlamaV2Cache(
+    draft_cache = ExLlamaV2Cache_Q4(
         draft_model,
         max_seq_len = total_context,
         lazy = True
@@ -265,7 +267,7 @@ config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
 
-ropescale = 1.0
+ropescale = 2.5
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 model = ExLlamaV2(config)
@@ -280,7 +282,7 @@ model = ExLlamaV2(config)
 #)
 
 #model.load_autosplit(cache, progress = True)
-model.load([15,19,22])
+model.load([16,18,18,20])
 # Also, tokenizer
 
 print("Loading tokenizer...")
@@ -288,11 +290,11 @@ tokenizer = ExLlamaV2Tokenizer(config)
 
 
 # Model Merge
-model = ExLlamaV2MergePassthrough(model)
+#model = ExLlamaV2MergePassthrough(model)
 
-lora_directory = "../Documents/trained_llama3_lr2e4_r64/"
-lora = ExLlamaV2Lora.from_directory(model, lora_directory)
-#lora = None
+#lora_directory = "../Documents/trained_llama3_lr2e4_r64/"
+#lora = ExLlamaV2Lora.from_directory(model, lora_directory)
+lora = None
 
 cache = ExLlamaV2Cache_Q4(
     model,
@@ -424,7 +426,7 @@ def process_prompts():
                 job = ExLlamaV2DynamicJob(
                     input_ids = ids,
                     max_new_tokens = max_tokens,
-                    stop_conditions = get_stop_conditions('llama3', tokenizer),
+                    stop_conditions = get_stop_conditions('llama', tokenizer),
                     gen_settings = ExLlamaV2Sampler.Settings(),
                     banned_strings = ban_strings,
                     filters = filters,
@@ -507,11 +509,11 @@ def process_prompts():
                         eos_prompt_id = job.prompt_ids
                         if(job.streamer):
                             ## Generator, yield here..
-                                partial_response_data = {
-                                    "finish_reason": "stop"
-                                }
+                            partial_response_data = {
+                                "finish_reason": "stop"
+                            }
 
-                                responses[eos_prompt_id] = partial_response_data
+                            responses[eos_prompt_id] = partial_response_data
                         else:# Construct the response based on the format
                             response_data = {
                                 "id": f"chatcmpl-{prompt_id}",
