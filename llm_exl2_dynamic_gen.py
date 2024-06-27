@@ -34,14 +34,14 @@ from threading import Thread
 import queue
 import uvicorn
 from io import StringIO
-from util import format_prompt_llama3, format_prompt, format_prompt_tess
+from util import format_prompt_llama3, format_prompt, format_prompt_tess, format_prompt_commandr
 from util_merge import ExLlamaV2MergePassthrough
 
 def generate_unique_id():
     return uuid.uuid4()
 
 # This is a demo and small stress to showcase some of the features of the dynamic batching generator.
-repo_str = 'tess-xl-exl2-speculative'
+repo_str = 'commandr-exl2'
 
 class CompletionRequest(BaseModel):
     model: str
@@ -205,7 +205,7 @@ model_dir = repo_id
 total_context = 32768
 
 # Max individual context
-max_context = 12288
+max_context = 8192 
 
 # N-gram or draft model speculative decoding. Largely detrimental to performance at higher batch sizes.
 use_ngram = False
@@ -215,7 +215,7 @@ if use_draft_model:
     draft_model_dir = specrepo_id
 
 # Max number of batches to run at once, assuming the sequences will fit within total_context.
-max_batch_size = 6 if paged else 1
+max_batch_size = 4 if paged else 1
 
 # Max chunk size. Determines the size of prefill operations. Can be reduced to reduce pauses whenever a
 # new job is started, but at the expense of overall prompt ingestion speed.
@@ -267,22 +267,22 @@ config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
 
-ropescale = 2.5
-config.scale_alpha_value = ropescale
+#ropescale = 2.5
+#config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 model = ExLlamaV2(config)
 
 # Configure the cache. The dynamic generator expects a batch size of 1 and a max_seq_len equal to
 # the total number of cached tokens. The flat cache will be split dynamically
 
-#cache = ExLlamaV2Cache(
-#    model,
-#    max_seq_len = total_context,
-    #lazy = True
-#)
+cache = ExLlamaV2Cache_Q4(
+    model,
+    max_seq_len = total_context,
+    lazy = True
+)
 
-#model.load_autosplit(cache, progress = True)
-model.load([16,18,18,20])
+model.load_autosplit(cache, progress = True)
+#model.load([16,18,18,20])
 # Also, tokenizer
 
 print("Loading tokenizer...")
@@ -296,11 +296,11 @@ tokenizer = ExLlamaV2Tokenizer(config)
 #lora = ExLlamaV2Lora.from_directory(model, lora_directory)
 lora = None
 
-cache = ExLlamaV2Cache_Q4(
-    model,
-    max_seq_len = total_context,
+#cache = ExLlamaV2Cache_Q4(
+#    model,
+#    max_seq_len = total_context,
     #lazy = True
-)
+#)
 
 # Initialize the generator
 
@@ -574,6 +574,8 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_tess(request.messages)
         elif repo_str == 'tinyllama-exl2-speculative':
             prompt = await format_prompt_zephyr(request.messages)
+        elif repo_str == 'commandr-exl2' or repo_str == 'commandr-exl2-speculative':
+            prompt = await format_prompt_commandr(request.messages)
         else:
             prompt = await format_prompt(request.messages)
         status_area.update(f"Prompt: {prompt}")
