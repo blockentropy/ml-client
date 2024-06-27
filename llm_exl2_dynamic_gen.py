@@ -1,7 +1,7 @@
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache, ExLlamaV2Tokenizer
+from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_Q4, ExLlamaV2Tokenizer, ExLlamaV2Lora
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, ExLlamaV2Sampler
 from blessed import Terminal
 import pprint
@@ -35,6 +35,7 @@ import queue
 import uvicorn
 from io import StringIO
 from util import format_prompt_llama3, format_prompt
+from util_merge import ExLlamaV2MergePassthrough
 
 def generate_unique_id():
     return uuid.uuid4()
@@ -263,23 +264,41 @@ else:
 config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
+
+ropescale = 1.0
+config.scale_alpha_value = ropescale
+config.max_seq_len = max_context
 model = ExLlamaV2(config)
 
 # Configure the cache. The dynamic generator expects a batch size of 1 and a max_seq_len equal to
 # the total number of cached tokens. The flat cache will be split dynamically
 
-cache = ExLlamaV2Cache(
-    model,
-    max_seq_len = total_context,
-    lazy = True
-)
+#cache = ExLlamaV2Cache(
+#    model,
+#    max_seq_len = total_context,
+    #lazy = True
+#)
 
-model.load_autosplit(cache, progress = True)
-
+#model.load_autosplit(cache, progress = True)
+model.load([15,19,22])
 # Also, tokenizer
 
 print("Loading tokenizer...")
 tokenizer = ExLlamaV2Tokenizer(config)
+
+
+# Model Merge
+model = ExLlamaV2MergePassthrough(model)
+
+lora_directory = "../Documents/trained_llama3_lr2e4_r64/"
+lora = ExLlamaV2Lora.from_directory(model, lora_directory)
+#lora = None
+
+cache = ExLlamaV2Cache_Q4(
+    model,
+    max_seq_len = total_context,
+    #lazy = True
+)
 
 # Initialize the generator
 
@@ -295,6 +314,8 @@ generator = ExLlamaV2DynamicGenerator(
     paged = paged,
 )
 
+if lora is not None:
+    generator.set_loras(lora)
 
 # Active sequences and corresponding caches and settings
 prompts = queue.Queue()
