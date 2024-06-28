@@ -15,7 +15,7 @@ import requests
 import sseclient
 import subprocess
 import re
-
+import copy
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -43,10 +43,121 @@ from exllamav2.generator import (
     ExLlamaV2StreamingGenerator,
     ExLlamaV2Sampler
 )
+import traceback
+
 import uuid
 
 def generate_unique_id():
     return uuid.uuid4()
+
+# Taken from https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/managers/controller/radix_cache.py
+import heapq
+import time
+from collections import defaultdict
+
+class TreeNode:
+    def __init__(self):
+        self.children = defaultdict(TreeNode)
+        self.parent = None
+        self.key = None
+        self.value = None
+        self.lock_ref = 0
+        self.last_access_time = time.time()
+
+    def __lt__(self, other: "TreeNode"):
+        return self.last_access_time < other.last_access_time
+
+# Inspired by https://arxiv.org/pdf/2312.07104 but way more primitive for now
+class RadixCache:
+    def __init__(self, total_tokens: int =12288):
+        self.total_tokens = total_tokens
+        self.reset()
+        self.total_size = 0
+    def reset(self):
+        self.root_node = TreeNode()
+        self.root_node.key = None
+        self.root_node.value = None
+        self.root_node.lock_ref = 1
+        self.evictable_size_ = 0
+    def evict(self):
+        print("evicting")
+        num_tokens = self.total_size - self.total_tokens
+        leaves = self._collect_leaves()
+
+        heapq.heapify(leaves)
+        num_evicted = 0
+        while num_evicted < num_tokens and len(leaves):
+            x = heapq.heappop(leaves)
+
+            if x == self.root_node:
+                break
+            if x.lock_ref > 0:
+                continue
+
+            num_evicted += x.value.max_seq_len if x is not None else 0
+            self._delete_leaf(x)
+
+            if len(x.parent.children) == 0:
+                heapq.heappush(leaves, x.parent)
+        self.total_size -= num_evicted
+    def insert(self, prompt: str, cache):
+        # change below logic to keep cache under certain amount of tokens
+        self.total_size += cache.max_seq_len
+        print("Insert and current total size ", self.total_size)
+        # can probably use priority queue to optimize
+        if self.total_size > self.total_tokens:
+            self.evict()
+        self._insert_helper(self.root_node, prompt, cache)
+    def _collect_leaves(self):
+        ret_list = []
+
+        def dfs_(cur_node):
+            if len(cur_node.children) == 0:
+                ret_list.append(cur_node)
+
+            for x in cur_node.children.values():
+                dfs_(x)
+
+        dfs_(self.root_node)
+        return ret_list
+    def _delete_leaf(self, node):
+        for k, v in node.parent.children.items():
+            if v == node:
+                break
+        del node.parent.children[k]
+    def _insert_helper(self, node, prompt, cache):
+        node.last_access_time = time.time()
+        if len(prompt) == 0:
+            return 0
+        for key in node.children:
+            if prompt.startswith(key):
+                return self._insert_helper(node.children[key], prompt, cache)
+        # reached node which will be parent
+        # print("Inserting ", prompt)
+        new_node = TreeNode()
+        new_node.parent = node
+        new_node.key = prompt
+        new_node.value = cache
+        node.children[prompt] = new_node
+        return 0
+    def get(self, prompt):
+        return self._get_helper(self.root_node, prompt)
+    def _get_helper(self, node, prompt):
+        node.last_access_time = time.time()
+        if len(prompt) == 0:
+            return None
+        print(len(node.children))
+        for key in node.children:
+            if prompt.startswith(key):
+                return self._get_helper(node.children[key], prompt)
+        # this will be the last node which will match the prompt
+        return node
+    def print_cache(self):
+        self._print_helper(self.root_node)
+    def _print_helper(self, node, prefix="-"):
+        for key in node.children:
+            print(prefix+key)
+            self._print_helper(node.children[key], prefix+"-")
 
 class CompletionRequest(BaseModel):
     model: str
@@ -103,9 +214,16 @@ parser.add_argument('--cache_8bit', action='store_true', help='Use 8 bit cache.'
 parser.add_argument('--cache_q4', action='store_true', help='Use 4 bit cache.')
 parser.add_argument('--repo_str', type=str, default='llama3-70b-instruct', help='The model repository name')
 parser.add_argument('--outlines_device', type=int, default=2, help='The cuda device to which the outlines device is set')
+parser.add_argument('--dont_store_kv_cache', action='store_true', help='Do not store kv cache of past prompts')
+parser.add_argument('--max_cache_size', type=int, default=122880, help='Context length.')
 
 # Parse the arguments
 args = parser.parse_args()
+
+radix_cache = None
+if not args.dont_store_kv_cache:
+    radix_cache = RadixCache(args.max_cache_size)
+
 repo_str = args.repo_str
 
 config = configparser.ConfigParser()
@@ -223,12 +341,10 @@ class RequestCancelledMiddleware:
             request_id = str(generate_unique_id())
             while True:
                 message = await receive()
-                print(message)
                 if "body" in message:
                     message["body"] = json.loads(message["body"].decode('utf8'))
                     message["body"]["request_id"] = request_id
                     message["body"] = str.encode(json.dumps(message["body"]))
-                    print(message)
                 if message["type"] == "http.disconnect":
                     cancelled_request_ids.append(request_id)
                     handler_task.cancel()
@@ -289,9 +405,6 @@ def process_eos(i):
     global streamer
     output = generations[i].strip()
     prompt = input_prompts[i]
-    #output = tokenizer.decode(input_ids[i])[0]
-    print("-----")
-    print(output)
     generated_text = output
     # Calculate token counts
     completion_tokens = (tokenizer.encode(generated_text)).shape[-1]
@@ -341,6 +454,8 @@ def process_outline_prompts():
     global generations
     global caches
     global streamer
+    global radix_cache
+    global args
     assert args.use_outlines
     assert not use_dynamic_rope_scaling, "Currently ROPE scaling is not supported with outlines"
     base_model = model.model
@@ -364,14 +479,53 @@ def process_outline_prompts():
                         prompt_tokens = ids.shape[-1]
                         full_tokens = prompt_tokens + max_tokens
                         print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(full_tokens))
-                    if cache_8bit:
-                        ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
-                    elif cache_q4:
-                        ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)
+                    precomputed_cache_node = None
+                    # print("Cache: ")
+                    # radix_cache.print_cache()
+                    if radix_cache is not None:
+                        precomputed_cache_node = radix_cache.get(prompt)
+                    if precomputed_cache_node is None or precomputed_cache_node.value is None:
+                        if cache_8bit:
+                            ncache = ExLlamaV2Cache_8bit(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
+                        elif cache_q4:
+                            ncache = ExLlamaV2Cache_Q4(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)
+                        else:
+                            ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
+                        # print(len(ncache.key_states), len(ncache.value_states))
+                        # for i in range(len(ncache.key_states)):
+                        #     print(ncache.key_states[i].device, ncache.value_states[i].device)
+                        # if ncache.has_scales:
+                        #     print(len(ncache.key_scales), len(ncache.value_scales))
+                        #     for i in range(len(ncache.key_scales)):
+                        #         print(ncache.key_scales[i].device, ncache.value_scales[i].device)
+                        # if hasattr(ncache, "temp_tensors"):
+                        #     print(ncache.temp_tensors.keys())
+
+                        model.cache = ncache
+                        # preprocessing
+                        model.cache.current_seq_len = 0
+                        if ids.shape[0] > 1:
+                            model.model.forward(
+                                ids[:-1].view(1, -1),
+                                model.cache,
+                                preprocess_only=True,
+                                loras=[model.lora],
+                            )
+                        if radix_cache is not None:
+                            radix_cache.insert(prompt, model.cache.clone())
                     else:
-                        ncache = ExLlamaV2Cache(base_model, lazy=not base_model.loaded, max_seq_len = full_tokens)  # (max_seq_len could be different for each cache)
-                    model.cache = ncache
-                    model.past_seq = None
+                        model.cache = precomputed_cache_node.value
+                        print("hit")
+                        if prompt != precomputed_cache_node.key:
+                            model.model.forward(
+                                ids[:-1].view(1, -1),
+                                model.cache,
+                                preprocess_only=True,
+                                loras=[model.lora],
+                            )
+                            radix_cache.insert(prompt, model.cache.clone())
+
+                    model.past_seq = ids[0].to(f"cuda:{args.outlines_device}")
                     stop_at = outlines_dict.get("stop_at", None)
                     if outlines_dict["type"] == "choices":
                         generator = outlines.generate.choice(model, outlines_dict["choices"], sampler=sampler)
@@ -399,7 +553,10 @@ def process_outline_prompts():
                             generations[i] += decoded_response_token
                         except Exception as e:
                             print(e)
+                            print(traceback.format_exc())
                             is_finished = True
+                            if radix_cache is not None:
+                                radix_cache.insert(generations[i], model.cache.clone())
                         reason = None
                         if(streamer[i]):
                             outcontent = decoded_response_token
@@ -447,6 +604,7 @@ def process_outline_prompts():
             caches = []
             streamer = []
             print("Reset server due to ", e)
+            print(traceback.format_exc())
 
 
 
