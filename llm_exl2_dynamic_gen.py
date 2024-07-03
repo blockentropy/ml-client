@@ -201,6 +201,13 @@ class JobStatusDisplay:
         if self.console_line is not None:
             print(term.move_xy(0, self.console_line) + self.display_text)
 
+def get_stop_conditions(prompt_format, tokenizer):
+    if prompt_format == "llama":
+        return [tokenizer.eos_token_id]
+    elif prompt_format == "llama3":
+        return [tokenizer.single_id("<|eot_id|>")]
+    elif prompt_format == "granite":
+        return [tokenizer.eos_token_id, "\n\nQuestion:"]
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -462,7 +469,7 @@ def process_prompts():
                     job = ExLlamaV2DynamicJob(
                         input_ids = ids,
                         max_new_tokens = max_tokens,
-                        stop_conditions = [tokenizer.eos_token_id] if stop_at is None else [tokenizer.eos_token_id, stop_at],
+                        stop_conditions = get_stop_conditions() if stop_at is None else [*get_stop_conditions(), stop_at],
                         gen_settings = ExLlamaV2Sampler.Settings(),
                         filters = filters,
                         token_healing = healing
