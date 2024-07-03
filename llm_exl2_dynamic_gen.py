@@ -469,7 +469,7 @@ def process_prompts():
                     job = ExLlamaV2DynamicJob(
                         input_ids = ids,
                         max_new_tokens = max_tokens,
-                        stop_conditions = get_stop_conditions() if stop_at is None else [*get_stop_conditions(), stop_at],
+                        stop_conditions = [tokenizer.eos_token_id] if stop_at is None else [tokenizer.eos_token_id, stop_at],
                         gen_settings = ExLlamaV2Sampler.Settings(),
                         filters = filters,
                         token_healing = healing
