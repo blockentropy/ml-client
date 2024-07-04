@@ -201,13 +201,14 @@ class JobStatusDisplay:
         if self.console_line is not None:
             print(term.move_xy(0, self.console_line) + self.display_text)
 
-def get_stop_conditions(prompt_format, tokenizer):
-    if prompt_format == "llama":
+def get_stop_conditions(tokenizer):
+    # get_stop_condition special case if model is llama3 
+    if "llama3" in repo_str:
+        return [tokenizer.single_id("<|eot_id|>"), tokenizer.eos_token_id]
+    # elif prompt_format == "granite":
+    #     return [tokenizer.eos_token_id, "\n\nQuestion:"]
+    else:
         return [tokenizer.eos_token_id]
-    elif prompt_format == "llama3":
-        return [tokenizer.single_id("<|eot_id|>")]
-    elif prompt_format == "granite":
-        return [tokenizer.eos_token_id, "\n\nQuestion:"]
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -466,11 +467,19 @@ def process_prompts():
                     #streamer.append(stream)
                     #prompt_ids.append(prompt_id)
 
+                    preferred_eos = get_stop_conditions(tokenizer)
+
+                    if stop_at is not None:
+                        preferred_eos.append(stop_at)
+
+                    gen_settings = ExLlamaV2Sampler.Settings()
+                    gen_settings.temperature = 1.0 if temperature>1 else temperature  # To make sure the temperature value does not exceed 1
+
                     job = ExLlamaV2DynamicJob(
                         input_ids = ids,
                         max_new_tokens = max_tokens,
-                        stop_conditions = [tokenizer.eos_token_id] if stop_at is None else [tokenizer.eos_token_id, stop_at],
-                        gen_settings = ExLlamaV2Sampler.Settings(),
+                        stop_conditions = preferred_eos if stop_at is None else [tokenizer.eos_token_id, stop_at],
+                        gen_settings = gen_settings,
                         filters = filters,
                         token_healing = healing
                     )
