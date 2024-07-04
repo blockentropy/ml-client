@@ -20,6 +20,7 @@ import re
 
 
 import sys, os
+import uvicorn
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exllamav2 import(
@@ -36,6 +37,8 @@ import uuid
 from blessed import Terminal
 import textwrap
 from outlines.integrations.exllamav2 import RegexFilter, TextFilter, JSONFilter, ChoiceFilter
+from util import format_prompt_llama3, format_prompt, format_prompt_tess, format_prompt_commandr
+from util_merge import ExLlamaV2MergePassthrough
 
 def generate_unique_id():
     return uuid.uuid4()
@@ -88,12 +91,9 @@ parser = argparse.ArgumentParser(description='Run server with specified port.')
 
 # Add argument for port with default type as integer
 parser.add_argument('--port', type=int, help='Port to run the server on.')
-parser.add_argument('--max_context', type=int, default=8192, help='Context length.')
 parser.add_argument('--repo_str', type=str, default='llama3-70b-instruct', help='The model repository name')
-parser.add_argument('--total_context', type=int, default=32768, help="Total context length")
 parser.add_argument('--max_chunk_size', type=int, default=2048, help='Max chunk size.')
 parser.add_argument('--max_new_tokens', type=int, default=2048, help='Max new tokens.')
-parser.add_argument('--display_mode', type=int, default=1, help='Display mode.')
 parser.add_argument('--use_draft_model', action="store_true", help='Do speculative decoding')
 parser.add_argument('--not_paged', action="store_true", help='Do not do paged attention')
 
@@ -103,16 +103,11 @@ parser.add_argument('--not_paged', action="store_true", help='Do not do paged at
 args = parser.parse_args()
 repo_str = args.repo_str
 
-config = configparser.ConfigParser()
-config.read('config.ini')
+term = Terminal()
 
-repo_id = config.get(repo_str, 'repo')
-host = config.get('settings', 'host')
-
-port = args.port if args.port is not None else config.getint('settings', 'port')
 class StatusArea:
     def __init__(self, num_lines):
-        self.num_lines = num_lines
+        self.num_lines = min(num_lines, term.height - 8)  # Ensure we don't exceed terminal height
         self.messages = [""] * num_lines
 
     def update(self, message, line=None):
@@ -151,7 +146,7 @@ class JobStatusDisplay:
         self.max_prefill = 0
         self.collected_output = ""
         self.tokens = 0
-        self.spaces = " " * 150
+        self.spaces = " " * term.width
         self.status_lines = status_lines
         self.display_text = ""
         #text = term.black(f"{self.console_line:3}:")
@@ -186,7 +181,8 @@ class JobStatusDisplay:
         text += "   "
         text += term.green(f"{self.tokens: 5} t")
         text += term.black(" -> ")
-        text += (self.spaces + self.collected_output)[-150:].replace("\t", " ")
+        output_length = term.width - len(text) +20
+        text += (self.spaces + self.collected_output)[-output_length:].replace("\t", " ")
 
         if "accepted_draft_tokens" in r:
             acc = r["accepted_draft_tokens"]
@@ -210,20 +206,21 @@ def get_stop_conditions(tokenizer):
     else:
         return [tokenizer.eos_token_id]
 
+
 config = configparser.ConfigParser()
 config.read('config.ini')
 
 repo_id = config.get(repo_str, 'repo')
 specrepo_id = config.get(repo_str, 'specrepo')
 host = config.get('settings', 'host')
+# Max individual context
+max_context = int(config.get(repo_str, 'max_context'))
+# Total number of tokens to allocate space for. This is not the max_seq_len supported by the model but
+# the total to distribute dynamically over however many jobs are active at once
+total_context = int(config.get(repo_str, 'total_context'))
 
 port = args.port if args.port is not None else config.getint('settings', 'port')
-# Display modes for this demo:
-# 1: One line per job, updated continuously
-# 2: Print completions as jobs finish
-# 3: Step over output iteration by iteration
-# 4: Space heater mode (no output)
-display_mode = args.display_mode
+display_mode = 1
 
 # Whether to use paged mode or not. The generator is very handicapped in unpaged mode, does not support batching
 # or CFG, but it will work without flash-attn 2.5.7+
@@ -231,13 +228,6 @@ paged = not args.not_paged
 
 # Where to find our model
 model_dir = repo_id
-
-# Total number of tokens to allocate space for. This is not the max_seq_len supported by the model but
-# the total to distribute dynamically over however many jobs are active at once
-total_context = total_context = args.total_context
-
-# Max individual context
-max_context = args.max_context
 
 # N-gram or draft model speculative decoding. Largely detrimental to performance at higher batch sizes.
 use_ngram = False
@@ -260,7 +250,6 @@ max_new_tokens = args.max_new_tokens
 healing = True
 
 
-term = Terminal()
 
 if use_draft_model:
 
@@ -353,7 +342,7 @@ prompt_length = []
 partial_responses = {}
 
 # Create jobs
-STATUS_LINES = 40  # Number of lines to dedicate for status messages
+STATUS_LINES = term.height-8  # Number of lines to dedicate for status messages
 LLM_LINES = max_batch_size
 status_area = StatusArea(STATUS_LINES)
 displays = {}
@@ -373,29 +362,29 @@ class RequestCancelledMiddleware:
             return
 
         # Let's make a shared queue for the request messages
-        queue = asyncio.Queue()
+        req_queue = asyncio.Queue()
         cancelled_request_ids = []
         async def message_poller(sentinel, handler_task):
-            nonlocal queue
+            nonlocal req_queue
             request_id = str(generate_unique_id())
             while True:
                 message = await receive()
-                print(message)
+                #print(message)
                 if "body" in message:
                     message["body"] = json.loads(message["body"].decode('utf8'))
                     message["body"]["request_id"] = request_id
                     message["body"] = str.encode(json.dumps(message["body"]))
-                    print(message)
+                    #print(message)
                 if message["type"] == "http.disconnect":
                     cancelled_request_ids.append(request_id)
                     handler_task.cancel()
                     return sentinel # Break the loop
 
                 # Puts the message in the queue
-                await queue.put(message)
+                await req_queue.put(message)
 
         sentinel = object()
-        handler_task = asyncio.create_task(self.app(scope, queue.get, send))
+        handler_task = asyncio.create_task(self.app(scope, req_queue.get, send))
         asyncio.create_task(message_poller(sentinel, handler_task))
 
         try:
@@ -407,6 +396,9 @@ class RequestCancelledMiddleware:
                 cancelled_id = cancelled_request_ids.pop()
                 generator.cancel(prompt_ids2jobs[cancelled_id])
                 del prompt_ids2jobs[cancelled_id]
+                prompt_length.pop()
+                input_ids.pop()
+
 
 
 app = FastAPI(title="EXL2")
@@ -438,7 +430,7 @@ def process_prompts():
 
         while True:
             while not prompts.empty() or len(input_ids):
-                while not prompts.empty():
+                while len(input_ids) < max_batch_size and not prompts.empty():
                     prompt_id, prompt, max_tokens, stream, temperature, outlines_dict = prompts.get()
                     stop_at = outlines_dict.get("stop_at", None)
                     if outlines_dict["type"] == "choices":
@@ -497,92 +489,96 @@ def process_prompts():
                     for index, (job, display) in enumerate(list(displays.items())):
                         display.update_position(index%LLM_LINES)  # Set position before updating
                     prompt_ids2jobs[prompt_id] = job
-                results = generator.iterate()
-                for r in results:
-                    job = r["job"]
-                    displays[job].update(r)
-                    displays[job].display()
-                    stage = r["stage"]
-                    stage = r.get("eos_reason", stage)
-                    outcontent = r.get("text", "")
-                    reason = None
-                    if(job.streamer):
-                        if r["eos"] and job.stop_at is not None:
-                            outcontent += job.stop_at
-                        partial_response_data = {
-                            "id": f"chatcmpl-{job.prompt_ids}",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": repo_str,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {
-                                        "content": outcontent
-                                    },
-                                    "finish_reason": reason
-                                }
-                            ]
-                        }
 
-                        # Initialize a list for new prompt_id or append to existing one
-                        if job.prompt_ids not in partial_responses:
-                            partial_responses[job.prompt_ids] = []
-                        partial_responses[job.prompt_ids].append(partial_response_data)
-
-                    if r['eos'] == True:
-                        total_time = r['time_generate']
-                        total_tokens = r['new_tokens']
-                        tokens_per_second = total_tokens / total_time if total_time > 0 else 0
-                        status_area.update(f"EOS detected: {stage}, Generated Tokens: {total_tokens}, Tokens per second: {tokens_per_second}/s", line=STATUS_LINES-2)
-
-                        #generated_part = job.input_ids[:, job.prompt_length:]
-                        #output = tokenizer.decode(generated_part[0]).strip()
-                        #output = tokenizer.decode(input_ids[i])[0]
-                        generated_text = r['full_completion']
-
-                        # Calculate token counts
-                        completion_tokens_old = (tokenizer.encode(generated_text)).shape[-1]
-
-                        completion_tokens = r['new_tokens']
-                        prompt_tokens = r['prompt_tokens']
-
-                        full_tokens = completion_tokens + prompt_tokens
-                        status_area.update(f"Completion Tokens: {completion_tokens_old}, New Completion Tokens: {completion_tokens}", line=STATUS_LINES-3)
-
-
-                        eos_prompt_id = job.prompt_ids
+                if(len(input_ids)):
+                    results = generator.iterate()
+                    for r in results:
+                        job = r["job"]
+                        displays[job].update(r)
+                        displays[job].display()
+                        stage = r["stage"]
+                        stage = r.get("eos_reason", stage)
+                        outcontent = r.get("text", "")
+                        reason = None
                         if(job.streamer):
-                            ## Generator, yield here..
+                            if r["eos"] and job.stop_at is not None:
+                                outcontent += job.stop_at
                             partial_response_data = {
-                                "finish_reason": "stop"
-                            }
-
-                            responses[eos_prompt_id] = partial_response_data
-                        else:# Construct the response based on the format
-                            if job.stop_at is not None:
-                                generated_text += job.stop_at
-                            response_data = {
-                                "id": f"chatcmpl-{prompt_id}",
-                                "object": "chat.completion",
+                                "id": f"chatcmpl-{job.prompt_ids}",
+                                "object": "chat.completion.chunk",
                                 "created": int(time.time()),
                                 "model": repo_str,
-                                "choices": [{
-                                    "index": 0,
-                                    "message": {
-                                        "role": "assistant",
-                                        "content": generated_text,
-                                    },
-                                    "finish_reason": "stop"
-                                }],
-                                "usage": {
-                                    "prompt_tokens": prompt_tokens,
-                                    "completion_tokens": completion_tokens,
-                                    "total_tokens": full_tokens
-                                }
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {
+                                            "content": outcontent
+                                        },
+                                        "finish_reason": reason
+                                    }
+                                ]
                             }
-                            responses[eos_prompt_id] = response_data
-                        del prompt_ids2jobs[eos_prompt_id]
+
+                            # Initialize a list for new prompt_id or append to existing one
+                            if job.prompt_ids not in partial_responses:
+                                partial_responses[job.prompt_ids] = []
+                            partial_responses[job.prompt_ids].append(partial_response_data)
+
+                        if r['eos'] == True:
+                            total_time = r['time_generate']
+                            total_tokens = r['new_tokens']
+                            tokens_per_second = total_tokens / total_time if total_time > 0 else 0
+                            status_area.update(f"EOS detected: {stage}, Generated Tokens: {total_tokens}, Tokens per second: {tokens_per_second}/s", line=STATUS_LINES-2)
+
+                            #generated_part = job.input_ids[:, job.prompt_length:]
+                            #output = tokenizer.decode(generated_part[0]).strip()
+                            #output = tokenizer.decode(input_ids[i])[0]
+                            generated_text = r['full_completion']
+
+                            # Calculate token counts
+                            completion_tokens_old = (tokenizer.encode(generated_text)).shape[-1]
+
+                            completion_tokens = r['new_tokens']
+                            prompt_tokens = r['prompt_tokens']
+
+                            full_tokens = completion_tokens + prompt_tokens
+                            status_area.update(f"Completion Tokens: {completion_tokens_old}, New Completion Tokens: {completion_tokens}", line=STATUS_LINES-3)
+
+
+                            eos_prompt_id = job.prompt_ids
+                            if(job.streamer):
+                                ## Generator, yield here..
+                                partial_response_data = {
+                                    "finish_reason": "stop"
+                                }
+
+                                responses[eos_prompt_id] = partial_response_data
+                            else:# Construct the response based on the format
+                                if job.stop_at is not None:
+                                    generated_text += job.stop_at
+                                response_data = {
+                                    "id": f"chatcmpl-{prompt_id}",
+                                    "object": "chat.completion",
+                                    "created": int(time.time()),
+                                    "model": repo_str,
+                                    "choices": [{
+                                        "index": 0,
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": generated_text,
+                                        },
+                                        "finish_reason": "stop"
+                                    }],
+                                    "usage": {
+                                        "prompt_tokens": prompt_tokens,
+                                        "completion_tokens": completion_tokens,
+                                        "total_tokens": full_tokens
+                                    }
+                                }
+                                responses[eos_prompt_id] = response_data
+                            del prompt_ids2jobs[eos_prompt_id]
+                            input_ids.pop()
+                            prompt_length.pop()
 
 
             else:
@@ -610,183 +606,6 @@ worker = Thread(target=process_prompts)
 worker.start()
 
 
-async def format_prompt(messages):
-    formatted_prompt = ""
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"{message.content}\n\n"
-        elif message.role == "user":
-            formatted_prompt += f"### User:\n{message.content}\n\n"
-        elif message.role == "assistant":
-            formatted_prompt += f"### Assistant:\n{message.content}\n\n"
-    # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "### Assistant:\n"
-    return formatted_prompt
-
-async def format_prompt_llama3(messages):
-    formatted_prompt = ""
-    system_message_found = False
-
-    # Check for a system message first
-    for message in messages:
-        if message.role == "system":
-            system_message_found = True
-            break
-
-    # If no system message was found, prepend a default one
-    if not system_message_found:
-        formatted_prompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful AI assistant.<|eot_id|>"
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{message.content}<|eot_id|>"
-        elif message.role == "user":
-            formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{message.content}<|eot_id|>"
-        elif message.role == "assistant":
-            formatted_prompt += f"<|start_header_id|>assistant<|end_header_id|>\n\n{message.content}<|eot_id|>"
-    # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    return formatted_prompt
-
-async def format_prompt_yi(messages):
-    formatted_prompt = ""
-    system_message_found = False
-    
-    # Check for a system message first
-    for message in messages:
-        if message.role == "system":
-            system_message_found = True
-            break
-    
-    # If no system message was found, prepend a default one
-    if not system_message_found:
-        formatted_prompt = "<|im_start|>system\nYou are a helpful AI assistant.<|im_end|>\n"
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"<|im_start|>system\n{message.content}<|im_end|>\n"
-        elif message.role == "user":
-            formatted_prompt += f"<|im_start|>user\n{message.content}<|im_end|>\n"
-        elif message.role == "assistant":
-            formatted_prompt += f"<|im_start|>assistant\n{message.content}<|im_end|>\n"
-    # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "<|im_start|>assistant\n"
-    return formatted_prompt
-
-async def format_prompt_nous(messages):
-    formatted_prompt = ""
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"{message.content}\n"
-        elif message.role == "user":
-            formatted_prompt += f"USER: {message.content}\n"
-        elif message.role == "assistant":
-            formatted_prompt += f"ASSISTANT: {message.content}\n"
-    # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "ASSISTANT: "
-    return formatted_prompt
-
-async def format_prompt_tess(messages):
-    formatted_prompt = ""
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"SYSTEM: {message.content}\n"
-        elif message.role == "user":
-            formatted_prompt += f"USER: {message.content}\n"
-        elif message.role == "assistant":
-            formatted_prompt += f"ASSISTANT: {message.content}\n"
-    # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "ASSISTANT: "
-    return formatted_prompt
-
-async def format_prompt_code(messages):
-    formatted_prompt = ""
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"### System Prompt\nYou are an intelligent programming assistant.\n\n"
-        elif message.role == "user":
-            formatted_prompt += f"### User Message\n{message.content}\n\n"
-        elif message.role == "assistant":
-            formatted_prompt += f"### Assistant\n{message.content}\n\n"
-    # Add the final "### Assistant" with ellipsis to prompt for the next response
-    formatted_prompt += "### Assistant\n..."
-    return formatted_prompt
-
-async def format_prompt_zephyr(messages):
-    formatted_prompt = ""
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"<|system|>\n{message.content}</s>\n"
-        elif message.role == "user":
-            formatted_prompt += f"<|user|>\n{message.content}</s>\n"
-        elif message.role == "assistant":
-            formatted_prompt += f"<|assistant|>\n{message.content}</s>\n"
-    # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "<|assistant|>\n"
-    return formatted_prompt
-
-async def format_prompt_starling(messages):
-    formatted_prompt = ""
-    system_message = ""
-    for message in messages:
-        if message.role == "system":
-            # Save system message to prepend to the first user message
-            system_message += f"{message.content}\n\n"
-        elif message.role == "user":
-            # Prepend system message if it exists
-            if system_message:
-                formatted_prompt += f"GPT4 Correct User: {system_message}{message.content}<|end_of_turn|>"
-                system_message = ""  # Clear system message after prepending
-            else:
-                formatted_prompt += f"GPT4 Correct User: {message.content}<|end_of_turn|>"
-        elif message.role == "assistant":
-            formatted_prompt += f"GPT4 Correct Assistant: {message.content}<|end_of_turn|>"  # Prep for user follow-up
-    formatted_prompt += "GPT4 Correct Assistant: \n\n"
-    return formatted_prompt
-
-async def format_prompt_mixtral(messages):
-    formatted_prompt = "<s> "
-    system_message = ""
-    for message in messages:
-        if message.role == "system":
-            # Save system message to prepend to the first user message
-            system_message += f"{message.content}\n\n"
-        elif message.role == "user":
-            # Prepend system message if it exists
-            if system_message:
-                formatted_prompt += f"[INST] {system_message}{message.content} [/INST] "
-                system_message = ""  # Clear system message after prepending
-            else:
-                formatted_prompt += f"[INST] {message.content} [/INST] "
-        elif message.role == "assistant":
-            formatted_prompt += f" {message.content}</s> "  # Prep for user follow-up
-    return formatted_prompt
-
-
-async def format_prompt_commandr(messages):
-    formatted_prompt = ""
-    system_message_found = False
-    
-    # Check for a system message first
-    for message in messages:
-        if message.role == "system":
-            system_message_found = True
-            break
-    
-    # If no system message was found, prepend a default one
-    if not system_message_found:
-        formatted_prompt += f"<BOS_TOKEN><|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
- 
-    for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"<BOS_TOKEN><|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
-        elif message.role == "user":
-            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|USER_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
-        elif message.role == "assistant":
-            formatted_prompt += f"<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>{message.content}<|END_OF_TURN_TOKEN|>"
-    # Add the final "### Assistant:\n" to prompt for the next response
-    formatted_prompt += "<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>"
-    return formatted_prompt
-
-
 @app.post('/v1/chat/completions')
 async def mainchat(request: ChatCompletionRequest):
     try:
@@ -795,7 +614,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt_code(request.messages)
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
-        elif repo_str == 'llama3-70b-instruct':
+        elif repo_str == 'llama3-70b-instruct' or 'llama3-70b-instruct-speculative':
             prompt = await format_prompt_llama3(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
@@ -813,7 +632,7 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt(request.messages)
         if request.partial_generation is not None:
             prompt += request.partial_generation
-        print(prompt)
+        status_area.update(f"Prompt: {prompt}")
 
         timeout = 180  # seconds
         start_time = time.time()
@@ -893,6 +712,5 @@ async def get_nvidia_smi():
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host=host, port=port, log_level="debug")
+    uvicorn.run(app, host=host, port=port, log_level="error")
+    print(term.enter_fullscreen())
