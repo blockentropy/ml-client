@@ -347,6 +347,7 @@ LLM_LINES = max_batch_size
 status_area = StatusArea(STATUS_LINES)
 displays = {}
 prompt_ids2jobs = {}
+cancelled_request_ids = []
 
 print("*** Loaded.. now Inference...:")
 
@@ -356,14 +357,14 @@ class RequestCancelledMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        global prompt_ids2jobs, prompt_length
+        global prompt_ids2jobs, prompt_length, cancelled_request_ids
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
         # Let's make a shared queue for the request messages
         req_queue = asyncio.Queue()
-        cancelled_request_ids = []
+        #cancelled_request_ids = []
         async def message_poller(sentinel, handler_task):
             nonlocal req_queue
             request_id = str(generate_unique_id())
@@ -388,17 +389,17 @@ class RequestCancelledMiddleware:
         try:
             return await handler_task
         except asyncio.CancelledError:
-            #print("Cancelling request due to disconnect")
-            # TODO: FIgure out how to get prompt id that disconnected
-            while len(cancelled_request_ids) > 0:
-                cancelled_id = cancelled_request_ids.pop()
-                if cancelled_id in prompt_ids2jobs:
-                    generator.cancel(prompt_ids2jobs[cancelled_id])
-                    del prompt_ids2jobs[cancelled_id]
-                    del prompt_length[cancelled_id]
-                    status_area.update(f"Cancelling request due to disconnect prompt: {cancelled_id}", line=STATUS_LINES-1)
-                else: 
-                    status_area.update(f"Cannot find job: {cancelled_id}", line=STATUS_LINES-1)
+            status_area.update(f"Cancelling request due to disconnect prompt", line=STATUS_LINES-1)
+#             # TODO: FIgure out how to get prompt id that disconnected
+#             while len(cancelled_request_ids) > 0:
+#                 cancelled_id = cancelled_request_ids.pop()
+#                 if cancelled_id in prompt_ids2jobs:
+#                     generator.cancel(prompt_ids2jobs[cancelled_id])
+#                     del prompt_ids2jobs[cancelled_id]
+#                     del prompt_length[cancelled_id]
+#                     status_area.update(f"Cancelling request due to disconnect prompt: {cancelled_id}", line=STATUS_LINES-1)
+#                 else: 
+#                     status_area.update(f"Cannot find job: {cancelled_id}", line=STATUS_LINES-1)
 
 
 app = FastAPI(title="EXL2")
@@ -425,7 +426,7 @@ async def stream_response(prompt_id, timeout=180):
 
 def process_prompts():
     global partial_responses
-    global prompt_ids2jobs, prompt_length
+    global prompt_ids2jobs, prompt_length, cancelled_request_ids
     try:
 
         while True:
@@ -577,6 +578,29 @@ def process_prompts():
                                 responses[eos_prompt_id] = response_data
                             del prompt_ids2jobs[eos_prompt_id]
                             del prompt_length[eos_prompt_id]
+                    if len(cancelled_request_ids):
+                        cancelled_id = cancelled_request_ids.pop()
+                        status_area.update(f"Cancelling request due to disconnect prompt: {cancelled_id}", line=STATUS_LINES-1)
+                        if cancelled_id in prompt_ids2jobs:
+                            generator.cancel(prompt_ids2jobs[cancelled_id])
+                            del prompt_ids2jobs[cancelled_id]
+                            del prompt_length[cancelled_id]
+                            status_area.update(f"Found and cancelling: {cancelled_id}", line=STATUS_LINES-1)
+                        else: 
+                            # Temporarily store items to check against cancelled_id
+                            temp_storage = []
+
+                            # Drain the queue and check each item
+                            while not prompts.empty():
+                                prompt_id, prompt, max_tokens, stream, temperature, outlines_dict = prompts.get()
+                                if prompt_id != cancelled_id:
+                                    # Only requeue prompts that do not match the cancelled_id
+                                    temp_storage.append((prompt_id, prompt, max_tokens, stream, temperature, outlines_dict))
+
+                            # Re-add the valid items back to the queue
+                            for item in temp_storage:
+                                prompts.put(item)
+
 
 
             else:
@@ -636,6 +660,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
         timeout = 180  # seconds
         start_time = time.time()
         prompt_id = requestid.scope.get("extensions", {}).get("request_id", "Unknown ID")
+        #prompt_id = generate_unique_id()
         status_area.update(f"Prompt: {prompt}, Prompt ID: {prompt_id}")
         outlines_dict = {}
         
