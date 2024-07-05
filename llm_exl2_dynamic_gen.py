@@ -8,9 +8,10 @@ from typing import AsyncIterable, List, Generator, Union, Optional
 import traceback
 import subprocess
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, TextStreamer, TextIteratorStreamer
 from threading import Thread
@@ -336,8 +337,7 @@ if lora is not None:
 # Active sequences and corresponding caches and settings
 prompts = queue.Queue()
 responses = {}
-input_ids = []
-prompt_length = []
+prompt_length = {}
 # Global variable for storing partial responses
 partial_responses = {}
 
@@ -356,7 +356,7 @@ class RequestCancelledMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        global prompt_ids2jobs
+        global prompt_ids2jobs, prompt_length
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -371,10 +371,8 @@ class RequestCancelledMiddleware:
                 message = await receive()
                 #print(message)
                 if "body" in message:
-                    message["body"] = json.loads(message["body"].decode('utf8'))
-                    message["body"]["request_id"] = request_id
-                    message["body"] = str.encode(json.dumps(message["body"]))
-                    #print(message)
+                    scope['extensions'] = {'request_id': request_id}
+
                 if message["type"] == "http.disconnect":
                     cancelled_request_ids.append(request_id)
                     handler_task.cancel()
@@ -390,15 +388,17 @@ class RequestCancelledMiddleware:
         try:
             return await handler_task
         except asyncio.CancelledError:
-            print("Cancelling request due to disconnect")
+            #print("Cancelling request due to disconnect")
             # TODO: FIgure out how to get prompt id that disconnected
             while len(cancelled_request_ids) > 0:
                 cancelled_id = cancelled_request_ids.pop()
-                generator.cancel(prompt_ids2jobs[cancelled_id])
-                del prompt_ids2jobs[cancelled_id]
-                prompt_length.pop()
-                input_ids.pop()
-
+                if cancelled_id in prompt_ids2jobs:
+                    generator.cancel(prompt_ids2jobs[cancelled_id])
+                    del prompt_ids2jobs[cancelled_id]
+                    del prompt_length[cancelled_id]
+                    status_area.update(f"Cancelling request due to disconnect prompt: {cancelled_id}", line=STATUS_LINES-1)
+                else: 
+                    status_area.update(f"Cannot find job: {cancelled_id}", line=STATUS_LINES-1)
 
 
 app = FastAPI(title="EXL2")
@@ -425,12 +425,12 @@ async def stream_response(prompt_id, timeout=180):
 
 def process_prompts():
     global partial_responses
-    global prompt_ids2jobs
+    global prompt_ids2jobs, prompt_length
     try:
 
         while True:
-            while not prompts.empty() or len(input_ids):
-                while len(input_ids) < max_batch_size and not prompts.empty():
+            while not prompts.empty() or len(prompt_length):
+                while len(prompt_length) < max_batch_size and not prompts.empty():
                     prompt_id, prompt, max_tokens, stream, temperature, outlines_dict = prompts.get()
                     stop_at = outlines_dict.get("stop_at", None)
                     if outlines_dict["type"] == "choices":
@@ -454,8 +454,7 @@ def process_prompts():
                         prompt_tokens = ids.shape[-1]
                         new_tokens = prompt_tokens + max_tokens
                         print("Truncating prompt: " + str(prompt_id) + "  Req tokens: " + str(new_tokens))
-                    prompt_length.append(prompt_tokens)
-                    input_ids.append(ids)
+                    prompt_length[prompt_id] = prompt_tokens
                     #streamer.append(stream)
                     #prompt_ids.append(prompt_id)
 
@@ -490,7 +489,7 @@ def process_prompts():
                         display.update_position(index%LLM_LINES)  # Set position before updating
                     prompt_ids2jobs[prompt_id] = job
 
-                if(len(input_ids)):
+                if(len(prompt_length)):
                     results = generator.iterate()
                     for r in results:
                         job = r["job"]
@@ -557,7 +556,7 @@ def process_prompts():
                                 if job.stop_at is not None:
                                     generated_text += job.stop_at
                                 response_data = {
-                                    "id": f"chatcmpl-{prompt_id}",
+                                    "id": f"chatcmpl-{eos_prompt_id}",
                                     "object": "chat.completion",
                                     "created": int(time.time()),
                                     "model": repo_str,
@@ -577,8 +576,7 @@ def process_prompts():
                                 }
                                 responses[eos_prompt_id] = response_data
                             del prompt_ids2jobs[eos_prompt_id]
-                            input_ids.pop()
-                            prompt_length.pop()
+                            del prompt_length[eos_prompt_id]
 
 
             else:
@@ -600,6 +598,7 @@ def process_prompts():
                 print("Error handling for full generation current not implemented")
             generator.cancel(job)
         prompt_ids2jobs = {}
+        prompt_length = {}
 
 # Start worker thread
 worker = Thread(target=process_prompts)
@@ -607,7 +606,7 @@ worker.start()
 
 
 @app.post('/v1/chat/completions')
-async def mainchat(request: ChatCompletionRequest):
+async def mainchat(requestid: Request, request: ChatCompletionRequest):
     try:
         prompt = ''
         if repo_str == 'Phind-CodeLlama-34B-v2':
@@ -632,11 +631,12 @@ async def mainchat(request: ChatCompletionRequest):
             prompt = await format_prompt(request.messages)
         if request.partial_generation is not None:
             prompt += request.partial_generation
-        status_area.update(f"Prompt: {prompt}")
+        
 
         timeout = 180  # seconds
         start_time = time.time()
-        prompt_id = request.request_id # Replace with a function to generate unique IDs
+        prompt_id = requestid.scope.get("extensions", {}).get("request_id", "Unknown ID")
+        status_area.update(f"Prompt: {prompt}, Prompt ID: {prompt_id}")
         outlines_dict = {}
         
         # Adjust temperature if it is 0
@@ -685,7 +685,7 @@ async def mainchat(request: ChatCompletionRequest):
 
 @app.get('/ping')
 async def get_status():
-    return {"ping": sum(prompt_length)}
+    return {"ping": sum(prompt_length.values())}
 
 @app.get("/nvidia-smi")
 async def get_nvidia_smi():
