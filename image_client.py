@@ -50,7 +50,7 @@ stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=schedule
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
 
-# stable_diffusion.load_ip_adapter(adapter_id, subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
+stable_diffusion.load_ip_adapter(adapter_id, subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
 
 stable_diffusion.to(f"cuda")
 
@@ -90,14 +90,14 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "generator": generator,
         "num_inference_steps": 20
     }
-    # ipimagenone = load_image("512x512bb.jpeg")
-    # # Conditionally add the ip_adapter_image argument
-    # if ipimage is not None:
-    #     args_dict["ip_adapter_image"] = ipimage
-    #     stable_diffusion.set_ip_adapter_scale(0.5)
-    # else:
-    #     args_dict["ip_adapter_image"] = ipimagenone
-    #     stable_diffusion.set_ip_adapter_scale(0.0)
+    ipimagenone = load_image("512x512bb.jpeg")
+    # Conditionally add the ip_adapter_image argument
+    if ipimage is not None:
+        args_dict["ip_adapter_image"] = ipimage
+        stable_diffusion.set_ip_adapter_scale(0.5)
+    else:
+        args_dict["ip_adapter_image"] = ipimagenone
+        stable_diffusion.set_ip_adapter_scale(0.0)
 
 
     image = stable_diffusion(**args_dict).images[0]
@@ -180,7 +180,7 @@ async def edits(inrequest: Request):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.n, tensor_image)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, tensor_image)
     
     except Exception as e:
         # Handle exception...
