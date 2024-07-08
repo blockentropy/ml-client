@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import io
@@ -27,7 +28,7 @@ class CompletionRequest(BaseModel):
     prompt: str
     n: Optional[int] = 42
     image: Optional[UploadFile] = None
-    response_format: Optional[str] = "url"
+    response_format: Optional[str] = "b64_json"
     size: Optional[str] = "1024x1024"
     quality: Optional[str] = "smooth"
     style: Optional[str] = "0.6"
@@ -49,7 +50,7 @@ stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=schedule
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
 
-stable_diffusion.load_ip_adapter(adapter_id, subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
+# stable_diffusion.load_ip_adapter(adapter_id, subfolder="sdxl_models", weight_name="ip-adapter_sdxl.bin")
 
 stable_diffusion.to(f"cuda")
 
@@ -75,7 +76,7 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
-def image_request(prompt: str, size: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
 
     negprompt = ""
     w, h = map(int, size.split('x'))
@@ -89,40 +90,58 @@ def image_request(prompt: str, size: str, seed: int = 42, ipimage: Optional[Imag
         "generator": generator,
         "num_inference_steps": 20
     }
-    ipimagenone = load_image("512x512bb.jpeg")
-    # Conditionally add the ip_adapter_image argument
-    if ipimage is not None:
-        args_dict["ip_adapter_image"] = ipimage
-        stable_diffusion.set_ip_adapter_scale(0.5)
-    else:
-        args_dict["ip_adapter_image"] = ipimagenone
-        stable_diffusion.set_ip_adapter_scale(0.0)
+    # ipimagenone = load_image("512x512bb.jpeg")
+    # # Conditionally add the ip_adapter_image argument
+    # if ipimage is not None:
+    #     args_dict["ip_adapter_image"] = ipimage
+    #     stable_diffusion.set_ip_adapter_scale(0.5)
+    # else:
+    #     args_dict["ip_adapter_image"] = ipimagenone
+    #     stable_diffusion.set_ip_adapter_scale(0.0)
+
 
     image = stable_diffusion(**args_dict).images[0]
 
     random_string = str(random.randint(100000, 999999))
     filename = "ai_seed"+str(seed)+"_"+random_string
 
-    response = upload_image(image, upload_url,filename,"ai")
-    if response.status_code == 200:
-        print("Generation and upload successful.", filename)
+    # Send appropriate response based on response_format
 
-    response_data = {
-        "created": int(time.time()),
-        "data": [
-            {
-                "url": path_url+filename+".jpg",
+    if response_format == "url":
+        response = upload_image(image, upload_url,filename,"ai")
+        if response.status_code == 200:
+            print("Generation and upload successful.", filename)
+
+        response_data = {
+            "created": int(time.time()),
+            "data": [
+                {
+                    "url": path_url+filename+".jpg",
+                }
+            ]
             }
-        ]
+        
+    elif response_format == "b64_json":
+        image_buffer = io.BytesIO()
+        image.save(image_buffer, format='JPEG')
+        image_buffer.seek(0)
+
+        response_data = {
+            "created": int(time.time()),
+            "data": base64.b64encode(image_buffer.read()),
         }
+
+
     return response_data
+
+
 
 @app.post('/v1/images/generations')
 async def main(request: CompletionRequest):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.n)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n)
     
     except Exception as e:
         # Handle exception...
