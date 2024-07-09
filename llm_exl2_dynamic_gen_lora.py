@@ -491,7 +491,7 @@ def process_prompts():
                         preferred_eos.append(stop_at)
 
                     gen_settings = ExLlamaV2Sampler.Settings()
-                    gen_settings.temperature = 2.0 if temperature>2 else temperature  # To make sure the temperature value does not exceed 1
+                    gen_settings.temperature = 2.0 if temperature>2 else temperature  # To make sure the temperature value does not exceed 2
 
                     job = ExLlamaV2DynamicJob(
                         input_ids = ids,
