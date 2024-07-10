@@ -28,7 +28,7 @@ class CompletionRequest(BaseModel):
     prompt: str
     n: Optional[int] = 42
     image: Optional[UploadFile] = None
-    response_format: Optional[str] = "b64_json"
+    response_format: Optional[str] = "url"
     size: Optional[str] = "1024x1024"
     quality: Optional[str] = "smooth"
     style: Optional[str] = "0.6"
@@ -160,7 +160,7 @@ async def edits(inrequest: Request):
         "prompt": form_data.get("prompt"),
         "n": int(form_data.get("n")) if form_data.get("n") else None,
         "model": form_data.get("model"),
-        "response_format": form_data.get("response_format"),
+        "response_format": form_data.get("response_format") if form_data.get("response_format") else "url",
         "quality": form_data.get("quality"),
         "style": form_data.get("style"),
         "size": form_data.get("size"),
