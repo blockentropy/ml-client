@@ -198,13 +198,6 @@ class JobStatusDisplay:
         if self.console_line is not None:
             print(term.move_xy(0, self.console_line) + self.display_text)
 
-def get_stop_conditions(tokenizer):
-    # get_stop_condition special case if model is llama3 
-    if "llama3" in repo_str:
-        return [tokenizer.single_id("<|eot_id|>"), tokenizer.eos_token_id]
-    else:
-        return [tokenizer.eos_token_id]
-
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -217,6 +210,8 @@ max_context = int(config.get(repo_str, 'max_context'))
 # Total number of tokens to allocate space for. This is not the max_seq_len supported by the model but
 # the total to distribute dynamically over however many jobs are active at once
 total_context = int(config.get(repo_str, 'total_context'))
+
+config_eos_token = config.get(repo_str, 'eos_token', fallback=None)
 
 port = args.port if args.port is not None else config.getint('settings', 'port')
 display_mode = 1
@@ -437,6 +432,7 @@ def process_prompts():
                     elif outlines_dict["type"] == "json":
                         filters = [JSONFilter(outlines_dict["json"], hf_tokenizer)]
                     elif outlines_dict["type"] == "regex":
+                        # Validation of regex
                         filters = [RegexFilter(outlines_dict["regex"], hf_tokenizer)]
                     else:
                         filters = []
@@ -457,7 +453,7 @@ def process_prompts():
                     #streamer.append(stream)
                     #prompt_ids.append(prompt_id)
 
-                    preferred_eos = get_stop_conditions(tokenizer)
+                    preferred_eos = [tokenizer.single_id(config_eos_token)] if config_eos_token is not None else [tokenizer.eos_token_id]
 
                     if stop_at is not None:
                         preferred_eos.append(stop_at)
