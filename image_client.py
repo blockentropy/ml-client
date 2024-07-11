@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import io
@@ -75,7 +76,7 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
-def image_request(prompt: str, size: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
 
     negprompt = ""
     w, h = map(int, size.split('x'))
@@ -98,31 +99,49 @@ def image_request(prompt: str, size: str, seed: int = 42, ipimage: Optional[Imag
         args_dict["ip_adapter_image"] = ipimagenone
         stable_diffusion.set_ip_adapter_scale(0.0)
 
+
     image = stable_diffusion(**args_dict).images[0]
 
     random_string = str(random.randint(100000, 999999))
     filename = "ai_seed"+str(seed)+"_"+random_string
 
-    response = upload_image(image, upload_url,filename,"ai")
-    if response.status_code == 200:
-        print("Generation and upload successful.", filename)
+    # Send appropriate response based on response_format
 
-    response_data = {
-        "created": int(time.time()),
-        "data": [
-            {
-                "url": path_url+filename+".jpg",
+    if response_format == "url":
+        response = upload_image(image, upload_url,filename,"ai")
+        if response.status_code == 200:
+            print("Generation and upload successful.", filename)
+
+        response_data = {
+            "created": int(time.time()),
+            "data": [
+                {
+                    "url": path_url+filename+".jpg",
+                }
+            ]
             }
-        ]
+        
+    elif response_format == "b64_json":
+        image_buffer = io.BytesIO()
+        image.save(image_buffer, format='JPEG')
+        image_buffer.seek(0)
+
+        response_data = {
+            "created": int(time.time()),
+            "data": base64.b64encode(image_buffer.read()),
         }
+
+
     return response_data
+
+
 
 @app.post('/v1/images/generations')
 async def main(request: CompletionRequest):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.n)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n)
     
     except Exception as e:
         # Handle exception...
@@ -141,7 +160,7 @@ async def edits(inrequest: Request):
         "prompt": form_data.get("prompt"),
         "n": int(form_data.get("n")) if form_data.get("n") else None,
         "model": form_data.get("model"),
-        "response_format": form_data.get("response_format"),
+        "response_format": form_data.get("response_format") if form_data.get("response_format") else "url",
         "quality": form_data.get("quality"),
         "style": form_data.get("style"),
         "size": form_data.get("size"),
@@ -161,7 +180,7 @@ async def edits(inrequest: Request):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.n, tensor_image)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, tensor_image)
     
     except Exception as e:
         # Handle exception...
