@@ -213,7 +213,7 @@ max_context = int(configini.get(repo_str, 'max_context'))
 # the total to distribute dynamically over however many jobs are active at once
 total_context = int(configini.get(repo_str, 'total_context'))
 
-config_eos_token = configini.get(repo_str, 'eos_token', fallback=None)
+config_eos_token_ids = configini.get(repo_str, 'eos_token_ids', fallback=None)
 
 port = args.port if args.port is not None else configini.getint('settings', 'port')
 display_mode = 1
@@ -480,18 +480,19 @@ def process_prompts():
                     #streamer.append(stream)
                     #prompt_ids.append(prompt_id)
 
-                    preferred_eos = [tokenizer.single_id(config_eos_token)] if config_eos_token is not None else [tokenizer.eos_token_id]
-
+                    eos_token_ids = [tokenizer.eos_token_id]
+                    if config_eos_token_ids is not None:
+                        eos_token_ids.extend([int(c) for c in config_eos_token_ids.split(',')])
                     if stop_at is not None:
-                        preferred_eos.append(stop_at)
-
+                        eos_token_ids.append(stop_at)
+                        
                     gen_settings = ExLlamaV2Sampler.Settings()
                     gen_settings.temperature = 2.0 if temperature>2 else temperature  # To make sure the temperature value does not exceed 2
 
                     job = ExLlamaV2DynamicJob(
                         input_ids = ids,
                         max_new_tokens = max_tokens,
-                        stop_conditions = preferred_eos,
+                        stop_conditions = eos_token_ids,
                         gen_settings = gen_settings,
                         filters = filters,
                         token_healing = healing
