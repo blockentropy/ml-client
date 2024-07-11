@@ -39,7 +39,7 @@ from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, 
 import uuid
 from blessed import Terminal
 import textwrap
-from outlines.integrations.exllamav2 import RegexFilter, TextFilter, JSONFilter, ChoiceFilter
+from outlines.integrations.exllamav2 import RegexFilter, JSONFilter, ChoiceFilter
 from util import format_prompt_llama3, format_prompt, format_prompt_tess, format_prompt_commandr
 from util_merge import ExLlamaV2MergePassthrough
 
@@ -281,8 +281,8 @@ config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
 
-#ropescale = 2.5
-#config.scale_alpha_value = ropescale
+ropescale = 2.5
+config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 model = ExLlamaV2(config)
 
@@ -291,7 +291,7 @@ model = ExLlamaV2(config)
 
 
 #model.load_autosplit(cache, progress = True)
-model.load([16,18,18], progress = True)
+model.load([16,18,18,18], progress = True)
 # Also, tokenizer
 
 print("Loading tokenizer...")
@@ -536,13 +536,13 @@ def process_prompts():
                     results = itertools.chain.from_iterable(all_results)
                     for r in results:
                         job = r["job"]
-                        #displays[job].update(r)
-                        #displays[job].display()
+                        displays[job].update(r)
+                        displays[job].display()
                         stage = r["stage"]
                         stage = r.get("eos_reason", stage)
                         outcontent = r.get("text", "")
-                        print(outcontent)
-                        print(r.get("token_ids", ""))
+                        #print(outcontent)
+                        #print(r.get("token_ids", ""))
                         reason = None
                         if(job.streamer):
                             if r["eos"] and job.stop_at is not None:
@@ -686,7 +686,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
             prompt = await format_prompt_code(request.messages)
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
-        elif repo_str == 'llama3-70b-instruct' or 'llama3-70b-instruct-speculative':
+        elif repo_str == 'llama3-70b-instruct' or repo_str == 'llama3-70b-instruct-speculative':
             prompt = await format_prompt_llama3(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
@@ -710,7 +710,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
         start_time = time.time()
         prompt_id = requestid.scope.get("extensions", {}).get("request_id", "Unknown ID")
         #prompt_id = generate_unique_id()
-        status_area.update(f"Prompt: {prompt}, Prompt ID: {prompt_id}")
+        status_area.update(f"Repostr: {repo_str}, Prompt: {prompt}, Prompt ID: {prompt_id}")
         outlines_dict = {}
         
         # Adjust temperature if it is 0
