@@ -203,7 +203,7 @@ class JobStatusDisplay:
 def get_stop_conditions(tokenizer):
     # get_stop_condition special case if model is llama3 
     if "llama3" in repo_str:
-        return [tokenizer.single_id("<|eot_id|>"), tokenizer.eos_token_id]
+        return [tokenizer.single_id("<|eot_id|>"), tokenizer.eos_token_id, 198]
     # elif prompt_format == "granite":
     #     return [tokenizer.eos_token_id, "\n\nQuestion:"]
     else:
@@ -386,7 +386,7 @@ class RequestCancelledMiddleware:
 
     async def __call__(self, scope, receive, send):
         global prompt_ids2jobs, prompt_length, cancelled_request_ids
-        if scope["type"] != "http":
+        if scope["type"] != "http" or scope["path"] != "/v1/chat/completions":
             await self.app(scope, receive, send)
             return
 
@@ -507,10 +507,10 @@ def process_prompts():
                     # Check if rmodel exists in the generators dictionary
                     if rmodel not in generators:
                         rmodel = generator_name  # Set rmodel to the default generator name if not found
-                        status_area.update(f"{rmodel} not found, using default generator: {generator_name}", line=STATUS_LINES-1)
 
                     # Now select the generator with the possibly updated rmodel
                     selected_generator = generators[rmodel]
+                    status_area.update(f"Using generator: {rmodel}", line=STATUS_LINES-1)
                 
                     job.prompt_length = prompt_tokens
                     job.input_ids = ids
@@ -536,11 +536,13 @@ def process_prompts():
                     results = itertools.chain.from_iterable(all_results)
                     for r in results:
                         job = r["job"]
-                        displays[job].update(r)
-                        displays[job].display()
+                        #displays[job].update(r)
+                        #displays[job].display()
                         stage = r["stage"]
                         stage = r.get("eos_reason", stage)
                         outcontent = r.get("text", "")
+                        print(outcontent)
+                        print(r.get("token_ids", ""))
                         reason = None
                         if(job.streamer):
                             if r["eos"] and job.stop_at is not None:
