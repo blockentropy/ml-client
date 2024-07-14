@@ -39,7 +39,7 @@ from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, 
 import uuid
 from blessed import Terminal
 import textwrap
-from outlines.integrations.exllamav2 import RegexFilter, TextFilter, JSONFilter, ChoiceFilter
+from outlines.integrations.exllamav2 import RegexFilter, JSONFilter, ChoiceFilter
 from util import format_prompt_llama3, format_prompt, format_prompt_tess, format_prompt_commandr
 from util_merge import ExLlamaV2MergePassthrough
 
@@ -200,7 +200,6 @@ class JobStatusDisplay:
         if self.console_line is not None:
             print(term.move_xy(0, self.console_line) + self.display_text)
 
-
 configini = configparser.ConfigParser()
 configini.read('config.ini')
 
@@ -274,8 +273,8 @@ config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
 
-#ropescale = 2.5
-#config.scale_alpha_value = ropescale
+ropescale = 2.5
+config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 model = ExLlamaV2(config)
 
@@ -284,7 +283,7 @@ model = ExLlamaV2(config)
 
 
 #model.load_autosplit(cache, progress = True)
-model.load([16,18,18], progress = True)
+model.load([16,18,18,18], progress = True)
 # Also, tokenizer
 
 print("Loading tokenizer...")
@@ -379,7 +378,7 @@ class RequestCancelledMiddleware:
 
     async def __call__(self, scope, receive, send):
         global prompt_ids2jobs, prompt_length, cancelled_request_ids
-        if scope["type"] != "http":
+        if scope["type"] != "http" or scope["path"] != "/v1/chat/completions":
             await self.app(scope, receive, send)
             return
 
@@ -501,10 +500,10 @@ def process_prompts():
                     # Check if rmodel exists in the generators dictionary
                     if rmodel not in generators:
                         rmodel = generator_name  # Set rmodel to the default generator name if not found
-                        status_area.update(f"{rmodel} not found, using default generator: {generator_name}", line=STATUS_LINES-1)
 
                     # Now select the generator with the possibly updated rmodel
                     selected_generator = generators[rmodel]
+                    status_area.update(f"Using generator: {rmodel}", line=STATUS_LINES-1)
                 
                     job.prompt_length = prompt_tokens
                     job.input_ids = ids
@@ -535,6 +534,8 @@ def process_prompts():
                         stage = r["stage"]
                         stage = r.get("eos_reason", stage)
                         outcontent = r.get("text", "")
+                        #print(outcontent)
+                        #print(r.get("token_ids", ""))
                         reason = None
                         if(job.streamer):
                             if r["eos"] and job.stop_at is not None:
@@ -678,7 +679,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
             prompt = await format_prompt_code(request.messages)
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
-        elif repo_str == 'llama3-70b-instruct' or 'llama3-70b-instruct-speculative':
+        elif repo_str == 'llama3-70b-instruct' or repo_str == 'llama3-70b-instruct-speculative':
             prompt = await format_prompt_llama3(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
@@ -702,7 +703,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
         start_time = time.time()
         prompt_id = requestid.scope.get("extensions", {}).get("request_id", "Unknown ID")
         #prompt_id = generate_unique_id()
-        status_area.update(f"Prompt: {prompt}, Prompt ID: {prompt_id}")
+        status_area.update(f"Repostr: {repo_str}, Prompt: {prompt}, Prompt ID: {prompt_id}")
         outlines_dict = {}
         
         # Adjust temperature if it is 0
