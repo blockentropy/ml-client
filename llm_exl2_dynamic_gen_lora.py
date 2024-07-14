@@ -273,7 +273,7 @@ config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
 
-ropescale = 2.5
+ropescale = float(configini.get(repo_str, 'ropescale'))
 config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 model = ExLlamaV2(config)
@@ -301,6 +301,7 @@ if merge_model == 'True':
 
 
 generators = {}
+gen_stop_token = {}
 generator_name = configini.get(repo_str, 'string')
 cache = ExLlamaV2Cache_Q4(
     model,
@@ -321,12 +322,14 @@ generator = ExLlamaV2DynamicGenerator(
     paged = paged,
 )
 generators[generator_name] = generator
+gen_stop_token[generator_name] = configini.get(repo_str, 'eos_token_ids', fallback=None)
 
 for key in configini[repo_str]:
     if key.startswith('lora') and key.endswith('_name'):
         lora_index = key.split('_')[0]  # lora1, lora2, etc.
         lora_name = configini.get(repo_str, key)
         lora_repo_key = f'{lora_index}_repo'
+        lora_stop_token = f'{lora_index}_stop_token'
         if lora_repo_key in configini[repo_str]:
             lora_repo = configini.get(repo_str, lora_repo_key)
             lora_model = ExLlamaV2Lora.from_directory(model, lora_repo)
@@ -345,6 +348,7 @@ for key in configini[repo_str]:
             )
             lora_generator.set_loras(lora_model)
             generators[lora_name] = lora_generator
+            gen_stop_token[lora_name] = configini.get(repo_str, lora_stop_token, fallback=None)
             print(f"Initialized {lora_name} Lora generator.")
 
 #lora_directory = "../Documents/trained_llama3_lr2e4_r64/"
@@ -479,9 +483,19 @@ def process_prompts():
                     #streamer.append(stream)
                     #prompt_ids.append(prompt_id)
 
+                    # Check if rmodel exists in the generators dictionary
+                    if rmodel not in generators:
+                        rmodel = generator_name  # Set rmodel to the default generator name if not found
+
+                    # Now select the generator with the possibly updated rmodel
+                    selected_generator = generators[rmodel]
+                    status_area.update(f"Using generator: {rmodel}", line=STATUS_LINES-1)
+ 
                     eos_token_ids = [tokenizer.eos_token_id]
-                    if config_eos_token_ids is not None:
-                        eos_token_ids.extend([int(c) for c in config_eos_token_ids.split(',')])
+                    #if config_eos_token_ids is not None:
+                    #    eos_token_ids.extend([int(c) for c in config_eos_token_ids.split(',')])
+                    if gen_stop_token[rmodel] is not None:
+                        eos_token_ids.extend([int(c) for c in gen_stop_token[rmodel].split(',')])
                     if stop_at is not None:
                         eos_token_ids.append(stop_at)
                         
@@ -496,15 +510,7 @@ def process_prompts():
                         filters = filters,
                         token_healing = healing
                     )
-
-                    # Check if rmodel exists in the generators dictionary
-                    if rmodel not in generators:
-                        rmodel = generator_name  # Set rmodel to the default generator name if not found
-
-                    # Now select the generator with the possibly updated rmodel
-                    selected_generator = generators[rmodel]
-                    status_area.update(f"Using generator: {rmodel}", line=STATUS_LINES-1)
-                
+               
                     job.prompt_length = prompt_tokens
                     job.input_ids = ids
                     job.streamer = stream
