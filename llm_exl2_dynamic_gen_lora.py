@@ -200,16 +200,6 @@ class JobStatusDisplay:
         if self.console_line is not None:
             print(term.move_xy(0, self.console_line) + self.display_text)
 
-def get_stop_conditions(tokenizer):
-    # get_stop_condition special case if model is llama3 
-    if "llama3" in repo_str:
-        return [tokenizer.single_id("<|eot_id|>"), tokenizer.eos_token_id, 198]
-    # elif prompt_format == "granite":
-    #     return [tokenizer.eos_token_id, "\n\nQuestion:"]
-    else:
-        return [tokenizer.eos_token_id]
-
-
 configini = configparser.ConfigParser()
 configini.read('config.ini')
 
@@ -221,6 +211,8 @@ max_context = int(configini.get(repo_str, 'max_context'))
 # Total number of tokens to allocate space for. This is not the max_seq_len supported by the model but
 # the total to distribute dynamically over however many jobs are active at once
 total_context = int(configini.get(repo_str, 'total_context'))
+
+config_eos_token_ids = configini.get(repo_str, 'eos_token_ids', fallback=None)
 
 port = args.port if args.port is not None else configini.getint('settings', 'port')
 display_mode = 1
@@ -487,18 +479,19 @@ def process_prompts():
                     #streamer.append(stream)
                     #prompt_ids.append(prompt_id)
 
-                    preferred_eos = get_stop_conditions(tokenizer)
-
+                    eos_token_ids = [tokenizer.eos_token_id]
+                    if config_eos_token_ids is not None:
+                        eos_token_ids.extend([int(c) for c in config_eos_token_ids.split(',')])
                     if stop_at is not None:
-                        preferred_eos.append(stop_at)
-
+                        eos_token_ids.append(stop_at)
+                        
                     gen_settings = ExLlamaV2Sampler.Settings()
-                    gen_settings.temperature = 1.0 if temperature>1 else temperature  # To make sure the temperature value does not exceed 1
+                    gen_settings.temperature = 2.0 if temperature>2 else temperature  # To make sure the temperature value does not exceed 2
 
                     job = ExLlamaV2DynamicJob(
                         input_ids = ids,
                         max_new_tokens = max_tokens,
-                        stop_conditions = preferred_eos if stop_at is None else [tokenizer.eos_token_id, stop_at],
+                        stop_conditions = eos_token_ids,
                         gen_settings = gen_settings,
                         filters = filters,
                         token_healing = healing
