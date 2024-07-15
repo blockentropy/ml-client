@@ -451,9 +451,8 @@ async def stream_response(prompt_id, timeout=180):
 def process_prompts():
     global partial_responses
     global prompt_ids2jobs, prompt_length, prompt_model, cancelled_request_ids
-    try:
-
-        while True:
+    while True:
+        try:
             while not prompts.empty() or len(prompt_length):
                 while len(prompt_length) < max_batch_size and not prompts.empty():
                     prompt_id, prompt, max_tokens, stream, temperature, rmodel, outlines_dict = prompts.get()
@@ -646,31 +645,29 @@ def process_prompts():
                             # Re-add the valid items back to the queue
                             for item in temp_storage:
                                 prompts.put(item)
-
-
-
             else:
                 # Sleep for a short duration when there's no work
                 time.sleep(0.1)  # Sleep for 100 milliseconds
-    except Exception as e:
-        print("Reset server due to ", e)
-        print(traceback.format_exc())
-        for prompt_id in prompt_ids2jobs:
-            job = prompt_ids2jobs[prompt_id]
-            if(job.streamer):
-                ## Generator, yield here..
-                partial_response_data = {
-                    "finish_reason": "stop"
-                }
+                
+        except Exception as e:
+            print("Reset server due to ", e)
+            print(traceback.format_exc())
+            for prompt_id in prompt_ids2jobs:
+                job = prompt_ids2jobs[prompt_id]
+                if(job.streamer):
+                    ## Generator, yield here..
+                    partial_response_data = {
+                        "finish_reason": "stop"
+                    }
 
-                responses[prompt_id] = partial_response_data
-            else:
-                print("Error handling for full generation current not implemented")
-            generators[job.model].cancel(job)
-            #generator.cancel(job)
-        prompt_ids2jobs = {}
-        prompt_length = {}
-        prompt_model = {}
+                    responses[prompt_id] = partial_response_data
+                else:
+                    print("Error handling for full generation current not implemented")
+                generators[job.model].cancel(job)
+                #generator.cancel(job)
+            prompt_ids2jobs = {}
+            prompt_length = {}
+            prompt_model = {}
 
 # Start worker thread
 worker = Thread(target=process_prompts)
