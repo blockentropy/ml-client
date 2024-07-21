@@ -417,60 +417,64 @@ async def stream_response(prompt_id, timeout=180):
                 break
 
 
-def handle_exception(prompt_id, e, stream=None):
-	global prompt_ids2jobs, prompt_length, partial_responses
+def handle_exception(exception_prompt_id, e, stream=None):
+    global prompt_ids2jobs, prompt_length, partial_responses
 
-	exception_text = f"There was a problem processing your request. Exception occurred: {str(e)}"
+    exception_message = f"There was a problem processing your request. Exception occurred: {str(e)}"
 
-	if stream:
-		exception_response = {
-			"id": f"chatcmpl-{prompt_id}",
-			"object": "chat.completion.chunk",
-			"created": int(time.time()),
-			"model": repo_str,
-			"choices": [
-				{
-					"index": 0,
-					"delta": {
-						"content": exception_text
-					},
-					"finish_reason": None
-				}
-			]
-		}
-		partial_responses[prompt_id] = [exception_response]
+    if stream:
+        exception_response = {
+            "id": f"chatcmpl-{exception_prompt_id}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": repo_str,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": exception_message
+                    },
+                    "finish_reason": None
+                }
+            ]
+        }
+        partial_responses[exception_prompt_id] = [exception_response]
 
-		partial_response_data = {
-			"finish_reason": "stop"
-		}
-		responses[prompt_id] = partial_response_data
+        partial_response_data = {
+            "finish_reason": "stop"
+        }
+        responses[exception_prompt_id] = partial_response_data
 
-	else:
-		exception_response = {
-			"id": f"chatcmpl-{prompt_id}",
-			"object": "chat.completion",
-			"created": int(time.time()),
-			"model": repo_str,
-			"choices": [
-				{
-				"index": 0,
-				"message": {
-					"role": "assistant",
-					"content": exception_text,
-				},
-				"finish_reason": "stop"
-			}],
-			"usage": {
-				"prompt_tokens": 0,
-				"completion_tokens": 0,
-				"total_tokens": 0
-			}
-		}
+    else:
+        exception_response = {
+            "id": f"chatcmpl-{exception_prompt_id}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": repo_str,
+            "choices": [
+                {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": exception_message,
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        }
 
-		responses[prompt_id] = exception_response
-
-	prompt_ids2jobs.pop(prompt_id, None)
-	prompt_length.pop(prompt_id, None)
+        responses[exception_prompt_id] = exception_response
+    
+    if exception_prompt_id in prompt_ids2jobs:
+        generator.cancel(prompt_ids2jobs[exception_prompt_id])
+        
+    prompt_ids2jobs.pop(exception_prompt_id, None)
+    prompt_length.pop(exception_prompt_id, None)
+    status_area.update(f"Problem processing the request for prompt: {exception_prompt_id}", line=STATUS_LINES-1)
 
 
 def process_prompts():
