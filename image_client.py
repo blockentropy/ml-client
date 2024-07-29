@@ -18,8 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from pydantic import BaseModel
-from diffusers import DiffusionPipeline, UniPCMultistepScheduler
+from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionXLControlNetPipeline
 from diffusers.utils import load_image
+
+from controlnet_aux import OpenposeDetector
+
+from controlnet_aux.processor import Processor
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -44,8 +48,20 @@ port = config.getint('settings', 'port')
 upload_url = config.get('settings', 'upload_url')
 path_url = config.get('settings', 'path_url')
 
+# Add ControlNet for openpose
+controlnet = ControlNetModel.from_pretrained(sd_controlnet_id, torch_dtype=torch.float16)
+
+# Add Openpose
+# openpose = OpenposeDetector.from_pretrained(controlnet_id, hand_and_face=True)
+openpose = Processor("openpose_full")
+
 scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
-stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
+
+# Load Stable Diffusion ControlNet Pipeline
+# stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
+stable_diffusion = StableDiffusionXLControlNetPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None, controlnet=controlnet)
+
+
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
 
