@@ -19,8 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from pydantic import BaseModel
-from diffusers import DiffusionPipeline, UniPCMultistepScheduler
+from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionXLControlNetPipeline
 from diffusers.utils import load_image
+
+from controlnet_aux import OpenposeDetector
+
+from controlnet_aux.processor import Processor
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -39,14 +43,28 @@ config = configparser.ConfigParser()
 config.read('config.ini')
 
 repo_id = config.get('be-stable-diffusion-xl-base-1.0', 'repo')
+controlnet_id = config.get('control-net', 'repo')
+sd_controlnet_id = config.get('sd-control-net', 'repo')
 adapter_id = config.get('ip-adapter', 'repo')
 host = config.get('settings', 'host')
 port = config.getint('settings', 'port')
 upload_url = config.get('settings', 'upload_url')
 path_url = config.get('settings', 'path_url')
 
+# Add ControlNet for openpose
+controlnet = ControlNetModel.from_pretrained(sd_controlnet_id, torch_dtype=torch.float16)
+
+# Add Openpose
+# openpose = OpenposeDetector.from_pretrained(controlnet_id, hand_and_face=True)
+openpose = Processor("openpose_full")
+
 scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
-stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
+
+# Load Stable Diffusion ControlNet Pipeline
+# stable_diffusion = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
+stable_diffusion = StableDiffusionXLControlNetPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None, controlnet=controlnet)
+
+
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
 
@@ -76,7 +94,9 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
-def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
+
+def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, user: Optional[str] = None, tempmodel: str = 'XL'):
+
 
     negprompt = ""
     w, h = map(int, size.split('x'))
@@ -91,13 +111,32 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "num_inference_steps": 20
     }
     ipimagenone = load_image("512x512bb.jpeg")
-    # Conditionally add the ip_adapter_image argument
-    if ipimage is not None:
-        args_dict["ip_adapter_image"] = ipimage
-        stable_diffusion.set_ip_adapter_scale(0.5)
-    else:
+    if user == "cn":
+        # For controlnet with openpose
         args_dict["ip_adapter_image"] = ipimagenone
         stable_diffusion.set_ip_adapter_scale(0.0)
+
+
+        openpose_image = openpose(ipimage)
+        args_dict["image"] = openpose_image
+        args_dict["controlnet_conditioning_scale"] = 1.0
+    
+    else:
+        # Everything else (Image generation and Image editing)
+        # Conditionally add the ip_adapter_image argument
+        if ipimage is not None:
+            args_dict["ip_adapter_image"] = ipimage
+            stable_diffusion.set_ip_adapter_scale(0.5)
+
+            args_dict["image"] = ipimagenone
+            args_dict["controlnet_conditioning_scale"] = 0.0
+
+        else:
+            args_dict["ip_adapter_image"] = ipimagenone
+            stable_diffusion.set_ip_adapter_scale(0.0)
+
+            args_dict["image"] = ipimagenone
+            args_dict["controlnet_conditioning_scale"] = 0.0
 
 
     image = stable_diffusion(**args_dict).images[0]
@@ -106,19 +145,34 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
     filename = "ai_seed"+str(seed)+"_"+random_string
 
     # Send appropriate response based on response_format
-
     if response_format == "url":
         response = upload_image(image, upload_url,filename,"ai")
         if response.status_code == 200:
             print("Generation and upload successful.", filename)
 
-        response_data = {
-            "created": int(time.time()),
-            "data": [
-                {
-                    "url": path_url+filename+".jpg",
-                }
-            ]
+        if user == "cn":
+            response_pose = upload_image(openpose_image, upload_url, filename + "_pose", "ai")
+            if response_pose.status_code == 200:
+                print("Generation and upload successful.", filename + "_pose")
+
+            response_data = {
+                "created": int(time.time()),
+                "data": [
+                    {
+                        "url_image": path_url+filename+".jpg",
+                        "url_pose": path_url+filename+"_pose"+".jpg",
+                    }
+                ]
+            }
+
+        else:
+            response_data = {
+                "created": int(time.time()),
+                "data": [
+                    {
+                        "url": path_url+filename+".jpg",
+                    }
+                ]
             }
         
     elif response_format == "b64_json":
@@ -126,10 +180,30 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         image.save(image_buffer, format='JPEG')
         image_buffer.seek(0)
 
-        response_data = {
-            "created": int(time.time()),
-            "data": base64.b64encode(image_buffer.read()),
-        }
+        if user == "cn":
+            image_buffer_pose = io.BytesIO()
+            openpose_image.save(image_buffer_pose, format='JPEG')
+            image_buffer_pose.seek(0)
+
+            response_data = {
+                "created": int(time.time()),
+                "data": [
+                    { 
+                        "b64_json_image": base64.b64encode(image_buffer.read()),
+                        "b64_json_pose": base64.b64encode(image_buffer_pose.read()),
+                    }
+                ]       
+            }
+
+        else:
+            response_data = {
+                "created": int(time.time()),
+                "data": [
+                    { 
+                        "b64_json": base64.b64encode(image_buffer.read()),
+                    }
+                ]
+            }
 
 
     return response_data
@@ -164,7 +238,7 @@ async def edits(inrequest: Request):
         "quality": form_data.get("quality"),
         "style": form_data.get("style"),
         "size": form_data.get("size"),
-        "user": form_data.get("user")
+        "user": form_data.get("user") if form_data.get("user") else None
     }
 
     # Create an instance of CompletionRequest
@@ -180,7 +254,8 @@ async def edits(inrequest: Request):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n, tensor_image)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, tensor_image, request.user)
+
     
     except Exception as e:
         # Handle exception...
