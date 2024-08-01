@@ -94,7 +94,9 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
+
 def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, user: Optional[str] = None, tempmodel: str = 'XL'):
+
 
     negprompt = ""
     w, h = map(int, size.split('x'))
@@ -113,6 +115,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         # For controlnet with openpose
         args_dict["ip_adapter_image"] = ipimagenone
         stable_diffusion.set_ip_adapter_scale(0.0)
+
 
         openpose_image = openpose(ipimage)
         args_dict["image"] = openpose_image
@@ -142,7 +145,6 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
     filename = "ai_seed"+str(seed)+"_"+random_string
 
     # Send appropriate response based on response_format
-
     if response_format == "url":
         response = upload_image(image, upload_url,filename,"ai")
         if response.status_code == 200:
@@ -202,7 +204,11 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
                     }
                 ]
             }
+
+
     return response_data
+
+
 
 @app.post('/v1/images/generations')
 async def main(request: CompletionRequest):
@@ -249,6 +255,7 @@ async def edits(inrequest: Request):
     response_data = None
     try:
         response_data = image_request(request.prompt, request.size, request.response_format, request.n, tensor_image, request.user)
+
     
     except Exception as e:
         # Handle exception...

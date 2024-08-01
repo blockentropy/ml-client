@@ -39,7 +39,7 @@ from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, 
 import uuid
 from blessed import Terminal
 import textwrap
-from outlines.integrations.exllamav2 import RegexFilter, TextFilter, JSONFilter, ChoiceFilter
+from outlines.integrations.exllamav2 import RegexFilter, JSONFilter, ChoiceFilter
 from util import format_prompt_llama3, format_prompt, format_prompt_tess, format_prompt_commandr
 from util_merge import ExLlamaV2MergePassthrough
 
@@ -200,16 +200,6 @@ class JobStatusDisplay:
         if self.console_line is not None:
             print(term.move_xy(0, self.console_line) + self.display_text)
 
-def get_stop_conditions(tokenizer):
-    # get_stop_condition special case if model is llama3 
-    if "llama3" in repo_str:
-        return [tokenizer.single_id("<|eot_id|>"), tokenizer.eos_token_id]
-    # elif prompt_format == "granite":
-    #     return [tokenizer.eos_token_id, "\n\nQuestion:"]
-    else:
-        return [tokenizer.eos_token_id]
-
-
 configini = configparser.ConfigParser()
 configini.read('config.ini')
 
@@ -221,6 +211,8 @@ max_context = int(configini.get(repo_str, 'max_context'))
 # Total number of tokens to allocate space for. This is not the max_seq_len supported by the model but
 # the total to distribute dynamically over however many jobs are active at once
 total_context = int(configini.get(repo_str, 'total_context'))
+
+config_eos_token_ids = configini.get(repo_str, 'eos_token_ids', fallback=None)
 
 port = args.port if args.port is not None else configini.getint('settings', 'port')
 display_mode = 1
@@ -281,8 +273,8 @@ config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
 
-#ropescale = 2.5
-#config.scale_alpha_value = ropescale
+ropescale = float(configini.get(repo_str, 'ropescale'))
+config.scale_alpha_value = ropescale
 config.max_seq_len = max_context
 model = ExLlamaV2(config)
 
@@ -291,7 +283,7 @@ model = ExLlamaV2(config)
 
 
 #model.load_autosplit(cache, progress = True)
-model.load([16,18,18], progress = True)
+model.load([16,18,18,18], progress = True)
 # Also, tokenizer
 
 print("Loading tokenizer...")
@@ -309,6 +301,7 @@ if merge_model == 'True':
 
 
 generators = {}
+gen_stop_token = {}
 generator_name = configini.get(repo_str, 'string')
 cache = ExLlamaV2Cache_Q4(
     model,
@@ -329,12 +322,14 @@ generator = ExLlamaV2DynamicGenerator(
     paged = paged,
 )
 generators[generator_name] = generator
+gen_stop_token[generator_name] = configini.get(repo_str, 'eos_token_ids', fallback=None)
 
 for key in configini[repo_str]:
     if key.startswith('lora') and key.endswith('_name'):
         lora_index = key.split('_')[0]  # lora1, lora2, etc.
         lora_name = configini.get(repo_str, key)
         lora_repo_key = f'{lora_index}_repo'
+        lora_stop_token = f'{lora_index}_stop_token'
         if lora_repo_key in configini[repo_str]:
             lora_repo = configini.get(repo_str, lora_repo_key)
             lora_model = ExLlamaV2Lora.from_directory(model, lora_repo)
@@ -353,6 +348,7 @@ for key in configini[repo_str]:
             )
             lora_generator.set_loras(lora_model)
             generators[lora_name] = lora_generator
+            gen_stop_token[lora_name] = configini.get(repo_str, lora_stop_token, fallback=None)
             print(f"Initialized {lora_name} Lora generator.")
 
 #lora_directory = "../Documents/trained_llama3_lr2e4_r64/"
@@ -386,7 +382,7 @@ class RequestCancelledMiddleware:
 
     async def __call__(self, scope, receive, send):
         global prompt_ids2jobs, prompt_length, cancelled_request_ids
-        if scope["type"] != "http":
+        if scope["type"] != "http" or scope["path"] != "/v1/chat/completions":
             await self.app(scope, receive, send)
             return
 
@@ -487,31 +483,34 @@ def process_prompts():
                     #streamer.append(stream)
                     #prompt_ids.append(prompt_id)
 
-                    preferred_eos = get_stop_conditions(tokenizer)
+                    # Check if rmodel exists in the generators dictionary
+                    if rmodel not in generators:
+                        rmodel = generator_name  # Set rmodel to the default generator name if not found
 
+                    # Now select the generator with the possibly updated rmodel
+                    selected_generator = generators[rmodel]
+                    status_area.update(f"Using generator: {rmodel}", line=STATUS_LINES-1)
+ 
+                    eos_token_ids = [tokenizer.eos_token_id]
+                    #if config_eos_token_ids is not None:
+                    #    eos_token_ids.extend([int(c) for c in config_eos_token_ids.split(',')])
+                    if gen_stop_token[rmodel] is not None:
+                        eos_token_ids.extend([int(c) for c in gen_stop_token[rmodel].split(',')])
                     if stop_at is not None:
-                        preferred_eos.append(stop_at)
-
+                        eos_token_ids.append(stop_at)
+                        
                     gen_settings = ExLlamaV2Sampler.Settings()
-                    gen_settings.temperature = 1.0 if temperature>1 else temperature  # To make sure the temperature value does not exceed 1
+                    gen_settings.temperature = 2.0 if temperature>2 else temperature  # To make sure the temperature value does not exceed 2
 
                     job = ExLlamaV2DynamicJob(
                         input_ids = ids,
                         max_new_tokens = max_tokens,
-                        stop_conditions = preferred_eos if stop_at is None else [tokenizer.eos_token_id, stop_at],
+                        stop_conditions = eos_token_ids,
                         gen_settings = gen_settings,
                         filters = filters,
                         token_healing = healing
                     )
-
-                    # Check if rmodel exists in the generators dictionary
-                    if rmodel not in generators:
-                        rmodel = generator_name  # Set rmodel to the default generator name if not found
-                        status_area.update(f"{rmodel} not found, using default generator: {generator_name}", line=STATUS_LINES-1)
-
-                    # Now select the generator with the possibly updated rmodel
-                    selected_generator = generators[rmodel]
-                
+               
                     job.prompt_length = prompt_tokens
                     job.input_ids = ids
                     job.streamer = stream
@@ -541,6 +540,8 @@ def process_prompts():
                         stage = r["stage"]
                         stage = r.get("eos_reason", stage)
                         outcontent = r.get("text", "")
+                        #print(outcontent)
+                        #print(r.get("token_ids", ""))
                         reason = None
                         if(job.streamer):
                             if r["eos"] and job.stop_at is not None:
@@ -684,7 +685,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
             prompt = await format_prompt_code(request.messages)
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
-        elif repo_str == 'llama3-70b-instruct' or 'llama3-70b-instruct-speculative':
+        elif repo_str == 'llama3-70b-instruct' or repo_str == 'llama3-70b-instruct-speculative':
             prompt = await format_prompt_llama3(request.messages)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
@@ -708,7 +709,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
         start_time = time.time()
         prompt_id = requestid.scope.get("extensions", {}).get("request_id", "Unknown ID")
         #prompt_id = generate_unique_id()
-        status_area.update(f"Prompt: {prompt}, Prompt ID: {prompt_id}")
+        status_area.update(f"Repostr: {repo_str}, Prompt: {prompt}, Prompt ID: {prompt_id}")
         outlines_dict = {}
         
         # Adjust temperature if it is 0
