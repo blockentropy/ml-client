@@ -52,6 +52,7 @@ path_url = config.get('settings', 'path_url')
 port = 12361
 
 seed = 42
+generator = torch.Generator("cpu").manual_seed(seed)
 text_encoder = T5EncoderModel.from_pretrained(
     repo_id,
     subfolder="text_encoder_3",
@@ -89,7 +90,8 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
 
     negprompt = ""
     w, h = map(int, size.split('x'))
-
+    generator = torch.Generator("cpu").manual_seed(seed)
+    
     args_dict = {
         "prompt": prompt,
         "negative_prompt": negprompt,
