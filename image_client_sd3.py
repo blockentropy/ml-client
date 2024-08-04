@@ -6,6 +6,7 @@ import io
 import logging
 import time
 import configparser
+import argparse
 from typing import AsyncIterable, List, Generator, Union, Optional
 import torch
 from PIL import Image
@@ -25,8 +26,6 @@ from diffusers import StableDiffusion3Pipeline
 from transformers import T5EncoderModel, BitsAndBytesConfig
 import subprocess
 
-logging.basicConfig(level=logging.DEBUG)
-
 quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16)
 #quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
@@ -35,21 +34,39 @@ class CompletionRequest(BaseModel):
     n: Optional[int] = 42
     image: Optional[UploadFile] = None
     response_format: Optional[str] = "url"
-    size: Optional[str] = "512x512"
+    size: Optional[str] = "1024x1024"
     quality: Optional[str] = "smooth"
     style: Optional[str] = "0.6"
     user: Optional[str] = None
+    negprompt: Optional[str] = None
 
+parser = argparse.ArgumentParser(description='Run server with specified port.')
+
+# Add argument for port with default type as integer
+parser.add_argument('--port', type=int, help='Port to run the server on.')
+parser.add_argument('--repo_str', type=str, default='stable-diffusion-3-medium', help='The model repository name')
+
+args = parser.parse_args()
+repo_str = args.repo_str
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-repo_id = config.get('be-stable-diffusion-3', 'repo')
+repo_id = config.get(repo_str, 'repo')
 host = config.get('settings', 'host')
 #port = config.getint('settings', 'port')
+maxh = config.get(repo_str, 'maxh')
+maxw = config.get(repo_str, 'maxw')
+max_height = int(maxh)
+max_width = int(maxw)
+minh = config.get(repo_str, 'minh')
+minw = config.get(repo_str, 'minw')
+min_height = int(minh)
+min_width = int(minw)
 upload_url = config.get('settings', 'upload_url')
 path_url = config.get('settings', 'path_url')
-port = 12361
+
+port = args.port if args.port is not None else config.getint('settings', 'port')
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
@@ -86,10 +103,18 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         print(f'Failed to upload image. Status code: {response.status_code}')
         return None
 
-def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, response_format: str, seed: int = 42, negprompt: str ="", ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
 
-    negprompt = ""
-    w, h = map(int, size.split('x'))
+    try:
+        w, h = map(int, size.split('x'))
+        # Ensure w and h do not exceed max_width and max_height
+        w = min(w, max_width)
+        h = min(h, max_height)
+        w = max(w, min_width)
+        h = max(h, min_height)
+    except ValueError:
+        #ignore
+        return None
     generator = torch.Generator("cpu").manual_seed(seed)
     
     args_dict = {
@@ -142,7 +167,7 @@ async def main(request: CompletionRequest):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt)
     
     except Exception as e:
         # Handle exception...
@@ -222,4 +247,4 @@ async def get_status():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port, log_level="debug")
+    uvicorn.run(app, host=host, port=port, log_level="error")
