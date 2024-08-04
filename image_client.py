@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from pydantic import BaseModel
-from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionXLControlNetPipeline
+from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionXLControlNetPipeline, DDIMScheduler
 from diffusers.utils import load_image
 import subprocess
 import numpy as np
@@ -88,7 +88,7 @@ if use_ctrlnet:
     # openpose = OpenposeDetector.from_pretrained(controlnet_id, hand_and_face=True)
     openpose = Processor("openpose_full")
 
-scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
+scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
 # Load Stable Diffusion ControlNet Pipeline
 # 
@@ -160,7 +160,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "height": h,
         "width": w,
         "generator": generator,
-        "num_inference_steps": 20
+        "num_inference_steps": 80
     }
     stable_diffusion = stable_diffusion_style
     if key == "face":
