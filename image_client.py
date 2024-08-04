@@ -28,11 +28,12 @@ import numpy as np
 from controlnet_aux import OpenposeDetector
 
 from controlnet_aux.processor import Processor
+from collections import defaultdict
 
 class CompletionRequest(BaseModel):
     prompt: str
     n: Optional[int] = 42
-    image: Optional[UploadFile] = None
+    image: Optional[Union[UploadFile, List[UploadFile]]] = None
     response_format: Optional[str] = "url"
     size: Optional[str] = "1024x1024"
     quality: Optional[str] = "smooth"
@@ -88,7 +89,7 @@ if use_ctrlnet:
     # openpose = OpenposeDetector.from_pretrained(controlnet_id, hand_and_face=True)
     openpose = Processor("openpose_full")
 
-scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
+scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
 # Load Stable Diffusion ControlNet Pipeline
 # 
@@ -97,17 +98,20 @@ if use_ctrlnet:
 else:
     stable_diffusion_style = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
     stable_diffusion_face = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
+    stable_diffusion_mix = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
 
 stable_diffusion_style.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder)
 stable_diffusion_face.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder_face)
+stable_diffusion_mix.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=[adapter_encoder, adapter_encoder_face])
 
 #stable_diffusion.enable_vae_slicing()
 #stable_diffusion.enable_sequential_cpu_offload()
 stable_diffusion_style.enable_model_cpu_offload()
 stable_diffusion_face.enable_model_cpu_offload()
+stable_diffusion_mix.enable_model_cpu_offload()
 print("*** Loaded.. now Inference...:")
 
 image_array = np.zeros((max_height, max_width, 3), dtype=np.uint8)
@@ -131,26 +135,33 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         return None
 
 
-def image_request(prompt: str, size: str, response_format: str, seed: int = 42, negprompt: str = "", ipimage: Optional[Image.Image] = None, user: Optional[str] = None, weight: Optional[str] = '0.5', tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, response_format: str, seed: int = 42, negprompt: str = "", ipimage: Union[Image.Image, List[Image.Image]] = None, user: Optional[str] = None, weight: Optional[str] = '0.5', tempmodel: str = 'XL'):
 
-    ipweight = 0.0
-    key = ""
-    try: 
+    weight_dict = defaultdict(list)
+    image_counts = defaultdict(int)
+    try:
         w, h = map(int, size.split('x'))
         # Ensure w and h do not exceed max_width and max_height
         w = min(w, max_width)
         h = min(h, max_height)
         w = max(w, min_width)
         h = max(h, min_height)
-
         if user is not None:
-            key, value = user.split(':')
-            # Try to convert the value to a float
-            ipweight = float(value)
+            user_items = user.split(',')
+            for item in user_items:
+                key, value = item.split(':')
+                weight_dict[key].append(float(value))
+                image_counts[key] += 1
     except ValueError:
         #ignore
-        return None 
-
+        return None
+    
+    keys = ['face', 'style']
+    ipweights = [0.0, 0.0]
+    for key, values in weight_dict.items():
+        if key in keys:
+            index = keys.index(key)
+            ipweights[index] = sum(values) / len(values)
 
     generator = torch.Generator("cpu").manual_seed(seed)
     args_dict = {
@@ -159,29 +170,55 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "height": h,
         "width": w,
         "generator": generator,
-        "num_inference_steps": 20
+        "num_inference_steps": 80
     }
-    stable_diffusion = stable_diffusion_style
-    if key == "face":
-        stable_diffusion = stable_diffusion_face
-    if key == "style":
-        stable_diffusion = stable_diffusion_style
-    if key == "cn":
-        # For controlnet with openpose
-        args_dict["ip_adapter_image"] = ipimagenone
-        stable_diffusion.set_ip_adapter_scale(0.0)
-
-
-        openpose_image = openpose(ipimage)
-        args_dict["image"] = openpose_image
-        args_dict["controlnet_conditioning_scale"] = 1.0
-    
+    print(ipweights)
+    print(keys)
+    if isinstance(ipimage, list) and len(ipimage) > 0:
+        stable_diffusion = stable_diffusion_mix
+        
+        # Split images based on the counts in the user string
+        face_images = []
+        style_images = []
+        current_index = 0
+        
+        for key in keys:
+            count = image_counts[key]
+            if key == 'face':
+                face_images.extend(ipimage[current_index:current_index+count])
+            elif key == 'style':
+                style_images.extend(ipimage[current_index:current_index+count])
+            current_index += count
+        
+        # If there are no style images, use imagenone
+        if not style_images:
+            style_images = [ipimagenone]
+        if not face_images:
+            face_images = [ipimagenone]
+        
+        args_dict["ip_adapter_image"] = [face_images, style_images]
+        
+        stable_diffusion.set_ip_adapter_scale(ipweights)
     else:
-        # Everything else (Image generation and Image editing)
-        # Conditionally add the ip_adapter_image argument
-        if ipimage is not None:
-            args_dict["ip_adapter_image"] = ipimage
-            stable_diffusion.set_ip_adapter_scale(ipweight)
+        if "face" in keys:
+            stable_diffusion = stable_diffusion_face
+        elif "style" in keys:
+            stable_diffusion = stable_diffusion_style
+        else:
+            stable_diffusion = stable_diffusion_style  # default
+
+        if "cn" in keys:
+            # For controlnet with openpose
+            args_dict["ip_adapter_image"] = ipimagenone
+            stable_diffusion.set_ip_adapter_scale(0.0)
+
+            openpose_image = openpose(ipimage[0] if isinstance(ipimage, list) else ipimage)
+            args_dict["image"] = openpose_image
+            args_dict["controlnet_conditioning_scale"] = 1.0
+        elif ipimage is not None:
+            # Everything else (Image generation and Image editing)
+            args_dict["ip_adapter_image"] = ipimage[0] if isinstance(ipimage, list) else ipimage
+            stable_diffusion.set_ip_adapter_scale(ipweights[0] if ipweights else float(weight))
 
         else:
             args_dict["ip_adapter_image"] = ipimagenone
@@ -271,7 +308,8 @@ async def main(request: CompletionRequest):
 @app.post('/v1/images/edits')
 async def edits(inrequest: Request):
     form_data = await inrequest.form()
-    imageup: UploadFile = form_data.get("image")
+    #imageup: UploadFile = form_data.get("image")
+    image_uploads = form_data.getlist("image")
 
     # Extract other fields and create a dictionary to create a CompletionRequest instance
     completion_request_data = {
@@ -289,22 +327,28 @@ async def edits(inrequest: Request):
     # Create an instance of CompletionRequest
     request = CompletionRequest(**completion_request_data)
 
-    tensor_image = None
-    if imageup:
+    #tensor_image = None
+    tensor_images = []
+    if image_uploads:
         w, h = map(int, request.size.split('x'))
         # Ensure w and h do not exceed max_width and max_height
         w = min(w, max_width)
         h = min(h, max_height)
  
-        image_data = await imageup.read()
-        tensor_image = Image.open(io.BytesIO(image_data))
-        tensor_image = tensor_image.resize((w, h))
+        for image_upload in image_uploads:
+            image_data = await image_upload.read()
+            tensor_image = Image.open(io.BytesIO(image_data))
+            tensor_image = tensor_image.resize((w, h))
+            tensor_images.append(tensor_image)
+        #image_data = await imageup.read()
+        #tensor_image = Image.open(io.BytesIO(image_data))
+        #tensor_image = tensor_image.resize((w, h))
     else:
-        tensor_image = None
+        tensor_images = None
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt, tensor_image, request.user, request.style)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt, tensor_images, request.user, request.style)
 
     
     except Exception as e:
