@@ -42,10 +42,11 @@ class CompletionRequest(BaseModel):
     n: Optional[int] = 42
     image: Optional[UploadFile] = None
     response_format: Optional[str] = "url"
-    size: Optional[str] = "512x512"
+    size: Optional[str] = "1024x1024"
     quality: Optional[str] = "smooth"
     style: Optional[str] = "0.6"
     user: Optional[str] = None
+    negprompt: Optional[str] = None
 
 
 config = configparser.ConfigParser()
@@ -120,7 +121,16 @@ def upload_image(image_file, upload_url, filename, wallet_address):
 def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, tempmodel: str = 'XL'):
 
     negprompt = ""
-    w, h = map(int, size.split('x'))
+    try:
+        w, h = map(int, size.split('x'))
+        # Ensure w and h do not exceed max_width and max_height
+        w = min(w, 1280)
+        h = min(h, 1280)
+        w = max(w, 768)
+        h = max(h, 768)
+    except ValueError:
+        #ignore
+        return None
     generator = torch.Generator().manual_seed(seed)
 
     args_dict = {
