@@ -88,7 +88,7 @@ if use_ctrlnet:
     # openpose = OpenposeDetector.from_pretrained(controlnet_id, hand_and_face=True)
     openpose = Processor("openpose_full")
 
-scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
+scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
 # Load Stable Diffusion ControlNet Pipeline
 # 
@@ -131,9 +131,8 @@ def upload_image(image_file, upload_url, filename, wallet_address):
         return None
 
 
-def image_request(prompt: str, size: str, response_format: str, seed: int = 42, ipimage: Optional[Image.Image] = None, user: Optional[str] = None, weight: Optional[str] = '0.5', tempmodel: str = 'XL'):
+def image_request(prompt: str, size: str, response_format: str, seed: int = 42, negprompt: str = "", ipimage: Optional[Image.Image] = None, user: Optional[str] = None, weight: Optional[str] = '0.5', tempmodel: str = 'XL'):
 
-    negprompt = ""
     ipweight = 0.0
     key = ""
     try: 
@@ -160,7 +159,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "height": h,
         "width": w,
         "generator": generator,
-        "num_inference_steps": 80
+        "num_inference_steps": 20
     }
     stable_diffusion = stable_diffusion_style
     if key == "face":
@@ -260,7 +259,7 @@ async def main(request: CompletionRequest):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt)
     
     except Exception as e:
         # Handle exception...
@@ -283,7 +282,8 @@ async def edits(inrequest: Request):
         "quality": form_data.get("quality"),
         "style": form_data.get("style"),
         "size": form_data.get("size"),
-        "user": form_data.get("user") if form_data.get("user") else None
+        "user": form_data.get("user") if form_data.get("user") else None,
+        "negprompt": form_data.get("negprompt") if form_data.get("negprompt") else "",
     }
 
     # Create an instance of CompletionRequest
@@ -304,7 +304,7 @@ async def edits(inrequest: Request):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n, tensor_image, request.user, request.style)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt, tensor_image, request.user, request.style)
 
     
     except Exception as e:
