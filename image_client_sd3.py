@@ -190,6 +190,7 @@ async def edits(inrequest: Request):
         "quality": form_data.get("quality"),
         "style": form_data.get("style"),
         "size": form_data.get("size"),
+        "negprompt": form_data.get("negprompt") if form_data.get("negprompt") else "",
         "user": form_data.get("user")
     }
 
@@ -206,7 +207,7 @@ async def edits(inrequest: Request):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n, tensor_image)
+        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt, tensor_image)
     
     except Exception as e:
         # Handle exception...
