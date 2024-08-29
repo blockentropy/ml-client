@@ -97,28 +97,27 @@ if use_ctrlnet:
 scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
 #scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
-# Common pipeline configuration
-pipe_kwargs = {
-    "scheduler": scheduler,
-    "torch_dtype": torch.float16,
-    "use_safetensors": True,
-    "variant": "fp16",
-    "safety_checker": None
-}
-
 # Load base pipeline
-base_pipeline = DiffusionPipeline.from_pretrained(repo_id, **pipe_kwargs)
+base_pipeline = DiffusionPipeline.from_pretrained(
+    repo_id,
+    scheduler=scheduler,
+    torch_dtype=torch.float16,
+    use_safetensors=True,
+    variant="fp16",
+    safety_checker=None
+)
 
+# Reuse components for different pipelines
+stable_diffusion_style = DiffusionPipeline.from_pipe(base_pipeline)
+stable_diffusion_face = DiffusionPipeline.from_pipe(base_pipeline)
+stable_diffusion_mix = DiffusionPipeline.from_pipe(base_pipeline)
+
+# ControlNet setup (if needed)
 if use_ctrlnet:
     stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline.from_pipe(
         base_pipeline,
         controlnet=controlnet
     )
-else:
-    # Reuse components for different pipelines
-    stable_diffusion_style = DiffusionPipeline.from_pipe(base_pipeline)
-    stable_diffusion_face = DiffusionPipeline.from_pipe(base_pipeline)
-    stable_diffusion_mix = DiffusionPipeline.from_pipe(base_pipeline)
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
