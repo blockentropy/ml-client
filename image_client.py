@@ -33,6 +33,7 @@ from collections import defaultdict
 class CompletionRequest(BaseModel):
     prompt: str
     n: Optional[int] = 42
+    model: Optional[str] = "sd15"
     image: Optional[Union[UploadFile, List[UploadFile]]] = None
     response_format: Optional[str] = "url"
     size: Optional[str] = "1024x1024"
@@ -90,6 +91,7 @@ if use_ctrlnet:
     openpose = Processor("openpose_full")
 
 scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
+#scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
 # Load Stable Diffusion ControlNet Pipeline
 # 
@@ -136,7 +138,7 @@ def upload_image(image_file, upload_url, filename, wallet_address):
 
 
 def image_request(prompt: str, size: str, response_format: str, seed: int = 42, negprompt: str = "", ipimage: Union[Image.Image, List[Image.Image]] = None, user: Optional[str] = None, weight: Optional[str] = '0.5', tempmodel: str = 'XL'):
-
+    key = ""
     weight_dict = defaultdict(list)
     image_counts = defaultdict(int)
     try:
@@ -170,7 +172,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "height": h,
         "width": w,
         "generator": generator,
-        "num_inference_steps": 80
+        "num_inference_steps": 50
     }
     print(ipweights)
     print(keys)
