@@ -110,19 +110,15 @@ pipe_kwargs = {
 base_pipeline = DiffusionPipeline.from_pretrained(repo_id, **pipe_kwargs)
 
 if use_ctrlnet:
-    stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline(
-        vae=base_pipeline.vae,
-        text_encoder=base_pipeline.text_encoder,
-        tokenizer=base_pipeline.tokenizer,
-        unet=base_pipeline.unet,
-        scheduler=base_pipeline.scheduler,
+    stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline.from_pipe(
+        base_pipeline,
         controlnet=controlnet
     )
 else:
     # Reuse components for different pipelines
-    stable_diffusion_style = DiffusionPipeline(**base_pipeline.components)
-    stable_diffusion_face = DiffusionPipeline(**base_pipeline.components)
-    stable_diffusion_mix = DiffusionPipeline(**base_pipeline.components)
+    stable_diffusion_style = DiffusionPipeline.from_pipe(base_pipeline)
+    stable_diffusion_face = DiffusionPipeline.from_pipe(base_pipeline)
+    stable_diffusion_mix = DiffusionPipeline.from_pipe(base_pipeline)
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
