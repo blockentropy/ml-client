@@ -4,7 +4,7 @@ import os
 import time
 import configparser
 import argparse
-from typing import AsyncIterable, List, Generator, Union, Optional
+from typing import AsyncIterable, List, Generator, Union, Optional, Dict, Any
 import traceback
 import subprocess
 import itertools
@@ -32,7 +32,7 @@ from exllamav2 import(
     ExLlamaV2Cache_8bit,
     ExLlamaV2Cache_Q4,
     ExLlamaV2Tokenizer,
-    ExLlamaV2Lora
+    ExLlamaV2Lora,
 )
 
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2DynamicJob, ExLlamaV2Sampler
@@ -87,6 +87,7 @@ class ChatCompletionRequest(BaseModel):
     json: Optional[str] = None
     request_id: Optional[str] = None
     partial_generation: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
 
 #repo_str = 'theprofessor-exl2-speculative'
 
@@ -249,7 +250,6 @@ healing = True
 if use_draft_model:
 
     draft_config = ExLlamaV2Config(draft_model_dir)
-    draft_config.scale_alpha_value = 6.0
     draft_config.max_seq_len = max_context
     draft_model = ExLlamaV2(draft_config)
 
@@ -273,8 +273,13 @@ config = ExLlamaV2Config(model_dir)
 config.max_input_len = max_chunk_size
 config.max_attention_size = max_chunk_size ** 2
 
-ropescale = float(configini.get(repo_str, 'ropescale'))
-config.scale_alpha_value = ropescale
+if 'ropescale' in configini[repo_str]:
+    try:
+        ropescale = float(configini.get(repo_str, 'ropescale'))
+        config.rope_scale = ropescale
+    except ValueError:
+        print(f"'ropescale' Using default value.")
+
 config.max_seq_len = max_context
 model = ExLlamaV2(config)
 
@@ -282,8 +287,6 @@ model = ExLlamaV2(config)
 # the total number of cached tokens. The flat cache will be split dynamically
 
 
-#model.load_autosplit(cache, progress = True)
-model.load([16,18,18,18], progress = True)
 # Also, tokenizer
 
 print("Loading tokenizer...")
@@ -303,11 +306,14 @@ if merge_model == 'True':
 generators = {}
 gen_stop_token = {}
 generator_name = configini.get(repo_str, 'string')
+
 cache = ExLlamaV2Cache_Q4(
     model,
     max_seq_len = total_context,
-    #lazy = True
+    lazy = True
 )
+
+model.load_autosplit(cache, progress = True)
 # Initialize the generator
 
 generator = ExLlamaV2DynamicGenerator(
@@ -315,6 +321,7 @@ generator = ExLlamaV2DynamicGenerator(
     cache = cache,
     draft_model = draft_model,
     draft_cache = draft_cache,
+    num_draft_tokens = 2,
     tokenizer = tokenizer,
     max_batch_size = max_batch_size,
     use_ngram_draft = use_ngram,
@@ -686,7 +693,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
         elif repo_str == 'llama3-70b-instruct' or repo_str == 'llama3-70b-instruct-speculative':
-            prompt = await format_prompt_llama3(request.messages)
+            prompt = await format_prompt_llama3(request.messages, request.tools)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
         elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':

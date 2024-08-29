@@ -1,3 +1,15 @@
+import json
+
+def tools_to_string(tools):
+    if not tools:
+        return None
+    
+    tool_strings = []
+    for tool in tools:
+        tool_string = json.dumps(tool, indent=2)
+        tool_strings.append(tool_string)
+    
+    return "\n\n".join(tool_strings)
 
 async def format_prompt(messages):
     formatted_prompt = ""
@@ -12,30 +24,49 @@ async def format_prompt(messages):
     formatted_prompt += "### Assistant:\n"
     return formatted_prompt
 
-async def format_prompt_llama3(messages):
-    formatted_prompt = ""
-    system_message_found = False
 
-    # Check for a system message first
+async def format_prompt_llama3(messages, tool_string=None):
+    formatted_prompt = ""
+    system_message = None
+
+    # Check for an existing system message
     for message in messages:
         if message.role == "system":
-            system_message_found = True
+            system_message = message.content
             break
 
-    # If no system message was found, prepend a default one
-    if not system_message_found:
-        formatted_prompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful AI assistant.<|eot_id|>"
+    if tool_string:
+        tool_string = tools_to_string(tool_string)
+        system_message = "You are a helpful assistant with tool calling capabilities. When you receive a tool call response, use the output to format an answer to the original user question."
+    elif not system_message:
+        system_message = "You are a helpful AI assistant."
+
+    tool_preface = 'Given the following functions, please respond with a JSON for a function call with its proper arguments that best answers the given prompt.\n\n\
+    Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}. Do not use variables.'
+
+    # Add the system message
+    formatted_prompt += f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>"
+
+    first_user_message = True
     for message in messages:
-        if message.role == "system":
-            formatted_prompt += f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{message.content}<|eot_id|>"
-        elif message.role == "user":
-            formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{message.content}<|eot_id|>"
+        if message.role == "user":
+            user_content = message.content
+            if tool_string:
+                if first_user_message:
+                    user_content = f"{tool_preface}\n\n{tool_string}\n\nQuestion: {user_content}"
+                    formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
+                    first_user_message = False
+                else:
+                    formatted_prompt += f"<|start_header_id|>ipython<|end_header_id|>\n\n{user_content}<|eot_id|>"
+            else:
+                formatted_prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
         elif message.role == "assistant":
             formatted_prompt += f"<|start_header_id|>assistant<|end_header_id|>\n\n{message.content}<|eot_id|>"
+
     # Add the final "### Assistant:\n" to prompt for the next response
     formatted_prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    return formatted_prompt
 
+    return formatted_prompt
 
 async def format_prompt_yi(messages):
     formatted_prompt = ""

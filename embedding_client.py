@@ -46,7 +46,7 @@ args = parser.parse_args()
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-repo_id = config.get('bge-large-en-v1.5', 'repo')
+repo_id = config.get('gte-large-en-v1.5', 'repo')
 host = config.get('settings', 'host')
 
 port = args.port if args.port is not None else config.getint('settings', 'port')
@@ -65,11 +65,11 @@ print("*** Loaded.. now Inference...:")
 app = FastAPI(title="BGE-embedding")
 
 def embedding_request(input: Union[str, List[str], List[List[int]]], tempmodel: str = 'BGE'):
-
-    if isinstance(input, list) and all(isinstance(i, list) for i in input):
+    if isinstance(input, str):
+        input = [input]  # Convert single string to list
+    elif isinstance(input, list) and all(isinstance(i, list) for i in input):
         enc = tiktoken.get_encoding("cl100k_base")
-        input = enc.decode(input[0])
-
+        input = [enc.decode(i) for i in input]
     encoded_input = tokenizer(input, padding=True, truncation=True, return_tensors='pt').to("cuda")
     print(encoded_input)
 
@@ -80,7 +80,7 @@ def embedding_request(input: Union[str, List[str], List[List[int]]], tempmodel: 
     # normalize embeddings
     sentence_embeddings = torch.nn.functional.normalize(sentence_embeddings, p=2, dim=1)
 
-    embedding = sentence_embeddings.cpu().squeeze().numpy().tolist()
+    embeddings = sentence_embeddings.cpu().numpy().tolist()
     prompt_tokens = sum(len(ids) for ids in encoded_input.input_ids)
 
     response_data = {
@@ -89,10 +89,11 @@ def embedding_request(input: Union[str, List[str], List[List[int]]], tempmodel: 
         "data": [
             {
                 "object": "embedding",
-                "index": 0,
+                "index": i,
                 "embedding": embedding,
             }
-        ],
+            for i, embedding in enumerate(embeddings)
+        ], 
         "usage": {
             "prompt_tokens": prompt_tokens,
             "total_tokens": prompt_tokens,
