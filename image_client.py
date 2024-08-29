@@ -97,14 +97,32 @@ if use_ctrlnet:
 scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
 #scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
-# Load Stable Diffusion ControlNet Pipeline
-# 
+# Common pipeline configuration
+pipe_kwargs = {
+    "scheduler": scheduler,
+    "torch_dtype": torch.float16,
+    "use_safetensors": True,
+    "variant": "fp16",
+    "safety_checker": None
+}
+
+# Load base pipeline
+base_pipeline = DiffusionPipeline.from_pretrained(repo_id, **pipe_kwargs)
+
 if use_ctrlnet:
-    stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None, controlnet=controlnet)
+    stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline(
+        vae=base_pipeline.vae,
+        text_encoder=base_pipeline.text_encoder,
+        tokenizer=base_pipeline.tokenizer,
+        unet=base_pipeline.unet,
+        scheduler=base_pipeline.scheduler,
+        controlnet=controlnet
+    )
 else:
-    stable_diffusion_style = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
-    stable_diffusion_face = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
-    stable_diffusion_mix = DiffusionPipeline.from_pretrained(repo_id, scheduler=scheduler, torch_dtype=torch.float16, use_safetensors=True, variant="fp16", safety_checker=None)
+    # Reuse components for different pipelines
+    stable_diffusion_style = DiffusionPipeline(**base_pipeline.components)
+    stable_diffusion_face = DiffusionPipeline(**base_pipeline.components)
+    stable_diffusion_mix = DiffusionPipeline(**base_pipeline.components)
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
@@ -115,9 +133,12 @@ stable_diffusion_mix.load_ip_adapter(adapter_id, subfolder=adapter_folder, weigh
 
 #stable_diffusion.enable_vae_slicing()
 #stable_diffusion.enable_sequential_cpu_offload()
-stable_diffusion_style.enable_model_cpu_offload()
-stable_diffusion_face.enable_model_cpu_offload()
-stable_diffusion_mix.enable_model_cpu_offload()
+#stable_diffusion_style.enable_model_cpu_offload()
+#stable_diffusion_face.enable_model_cpu_offload()
+#stable_diffusion_mix.enable_model_cpu_offload()
+stable_diffusion_style.to("cuda")
+stable_diffusion_face.to("cuda")
+stable_diffusion_mix.to("cuda")
 print("*** Loaded.. now Inference...:")
 
 image_array = np.zeros((max_height, max_width, 3), dtype=np.uint8)
