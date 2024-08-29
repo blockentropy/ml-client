@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from pydantic import BaseModel
-from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionXLControlNetPipeline, DDIMScheduler
+from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionControlNetPipeline, DDIMScheduler, DPMSolverMultistepScheduler
 from diffusers.utils import load_image
 import subprocess
 import numpy as np
@@ -31,7 +31,11 @@ from controlnet_aux import OpenposeDetector
 from controlnet_aux.processor import Processor
 from collections import defaultdict
 
-thread_pool = ThreadPoolExecutor(max_workers=2)  # Adjust the number of workers as needed
+from DeepCache import DeepCacheSDHelper
+import tomesd
+
+
+thread_pool = ThreadPoolExecutor(max_workers=1)  # Adjust the number of workers as needed
 active_requests = 0
 
 class CompletionRequest(BaseModel):
@@ -95,7 +99,8 @@ if use_ctrlnet:
     openpose = Processor("openpose_full")
 
 scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
-#scheduler = UniPCMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
+#scheduler = DPMSolverMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
+#scheduler.config.algorithm_type = 'sde-dpmsolver++'
 
 # Load base pipeline
 base_pipeline = DiffusionPipeline.from_pretrained(
@@ -105,25 +110,31 @@ base_pipeline = DiffusionPipeline.from_pretrained(
     use_safetensors=True,
     variant="fp16",
     safety_checker=None
-)
+).to("cuda")
+
+tomesd.apply_patch(base_pipeline, ratio=0.5)
+helper = DeepCacheSDHelper(pipe=base_pipeline)
+helper.set_params(
+        cache_interval=3,
+        cache_branch_id=0,
+        )
+helper.enable()
 
 # Reuse components for different pipelines
-stable_diffusion_style = DiffusionPipeline.from_pipe(base_pipeline)
-stable_diffusion_face = DiffusionPipeline.from_pipe(base_pipeline)
-stable_diffusion_mix = DiffusionPipeline.from_pipe(base_pipeline)
+#stable_diffusion_style = base_pipeline
+#stable_diffusion_face = base_pipeline
+stable_diffusion_mix = base_pipeline
 
-# ControlNet setup (if needed)
-if use_ctrlnet:
-    stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline.from_pipe(
-        base_pipeline,
-        controlnet=controlnet
-    )
+stable_diffusion_ctrl = StableDiffusionControlNetPipeline.from_pipe(
+    base_pipeline,
+    controlnet=controlnet
+)
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
 
-stable_diffusion_style.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder)
-stable_diffusion_face.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder_face)
+#stable_diffusion_style.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder)
+#stable_diffusion_face.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder_face)
 stable_diffusion_mix.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=[adapter_encoder, adapter_encoder_face])
 
 #stable_diffusion.enable_vae_slicing()
@@ -131,9 +142,9 @@ stable_diffusion_mix.load_ip_adapter(adapter_id, subfolder=adapter_folder, weigh
 #stable_diffusion_style.enable_model_cpu_offload()
 #stable_diffusion_face.enable_model_cpu_offload()
 #stable_diffusion_mix.enable_model_cpu_offload()
-stable_diffusion_style.to("cuda")
-stable_diffusion_face.to("cuda")
-stable_diffusion_mix.to("cuda")
+#stable_diffusion_style.to("cuda")
+#stable_diffusion_face.to("cuda")
+#stable_diffusion_mix.to("cuda")
 print("*** Loaded.. now Inference...:")
 
 image_array = np.zeros((max_height, max_width, 3), dtype=np.uint8)
@@ -192,18 +203,19 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "height": h,
         "width": w,
         "generator": generator,
-        "num_inference_steps": 50
+        "num_inference_steps": 60,
     }
     print(ipweights)
     print(keys)
+    #if isinstance(ipimage, list) and len(ipimage) > 0:
+    stable_diffusion = stable_diffusion_mix
+    
+    # Split images based on the counts in the user string
+    face_images = []
+    style_images = []
+    current_index = 0
+    
     if isinstance(ipimage, list) and len(ipimage) > 0:
-        stable_diffusion = stable_diffusion_mix
-        
-        # Split images based on the counts in the user string
-        face_images = []
-        style_images = []
-        current_index = 0
-        
         for key in keys:
             count = image_counts[key]
             if key == 'face':
@@ -211,40 +223,40 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
             elif key == 'style':
                 style_images.extend(ipimage[current_index:current_index+count])
             current_index += count
-        
-        # If there are no style images, use imagenone
-        if not style_images:
-            style_images = [ipimagenone]
-        if not face_images:
-            face_images = [ipimagenone]
-        
-        args_dict["ip_adapter_image"] = [face_images, style_images]
-        
-        stable_diffusion.set_ip_adapter_scale(ipweights)
-    else:
-        if "face" in keys:
-            stable_diffusion = stable_diffusion_face
-        elif "style" in keys:
-            stable_diffusion = stable_diffusion_style
-        else:
-            stable_diffusion = stable_diffusion_style  # default
+    
+    # If there are no style images, use imagenone
+    if not style_images:
+        style_images = [ipimagenone]
+    if not face_images:
+        face_images = [ipimagenone]
+    
+    args_dict["ip_adapter_image"] = [face_images, style_images]
+    
+    stable_diffusion.set_ip_adapter_scale(ipweights)
+    #else:
+    #    if "face" in keys:
+    #        stable_diffusion = stable_diffusion_face
+    #    elif "style" in keys:
+    #        stable_diffusion = stable_diffusion_style
+    #    else:
+    #        stable_diffusion = stable_diffusion_style  # default
 
-        if "cn" in keys:
+     #   if "cn" in keys:
             # For controlnet with openpose
-            args_dict["ip_adapter_image"] = ipimagenone
-            stable_diffusion.set_ip_adapter_scale(0.0)
+     #       args_dict["ip_adapter_image"] = ipimagenone
+     #       stable_diffusion.set_ip_adapter_scale(0.0)
 
-            openpose_image = openpose(ipimage[0] if isinstance(ipimage, list) else ipimage)
-            args_dict["image"] = openpose_image
-            args_dict["controlnet_conditioning_scale"] = 1.0
-        elif ipimage is not None:
-            # Everything else (Image generation and Image editing)
-            args_dict["ip_adapter_image"] = ipimage[0] if isinstance(ipimage, list) else ipimage
-            stable_diffusion.set_ip_adapter_scale(ipweights[0] if ipweights else float(weight))
+     #       openpose_image = openpose(ipimage[0] if isinstance(ipimage, list) else ipimage)
+     #       args_dict["image"] = openpose_image
+     #       args_dict["controlnet_conditioning_scale"] = 1.0
+     #   elif ipimage is not None:
+     #       # Everything else (Image generation and Image editing)
+     #       args_dict["ip_adapter_image"] = ipimage[0] if isinstance(ipimage, list) else ipimage
+     #       stable_diffusion.set_ip_adapter_scale(ipweights[0] if ipweights else float(weight))
 
-        else:
-            args_dict["ip_adapter_image"] = ipimagenone
-            stable_diffusion.set_ip_adapter_scale(0.0)
+      #  else:
+      #      args_dict["ip_adapter_image"] = ipimagenone
+      #      stable_diffusion.set_ip_adapter_scale(0.0)
 
     image = stable_diffusion(**args_dict).images[0]
 
