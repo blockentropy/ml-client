@@ -24,11 +24,15 @@ from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetMode
 from diffusers.utils import load_image
 import subprocess
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 
 from controlnet_aux import OpenposeDetector
 
 from controlnet_aux.processor import Processor
 from collections import defaultdict
+
+thread_pool = ThreadPoolExecutor(max_workers=2)  # Adjust the number of workers as needed
+active_requests = 0
 
 class CompletionRequest(BaseModel):
     prompt: str
@@ -295,20 +299,34 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
 
 @app.post('/v1/images/generations')
 async def main(request: CompletionRequest):
-
+    global active_requests
+    active_requests += 1
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt)
-    
+        #response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt)
+        response_data = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            image_request,
+            request.prompt,
+            request.size,
+            request.response_format,
+            request.n,
+            request.negprompt,
+        )
+
     except Exception as e:
         # Handle exception...
         logging.error(f"An error occurred: {e}")
         return {"error": str(e)}
-
+    
+    finally:
+        active_requests -= 1
     return response_data
 
 @app.post('/v1/images/edits')
 async def edits(inrequest: Request):
+    global active_requests
+    active_requests += 1
     form_data = await inrequest.form()
     #imageup: UploadFile = form_data.get("image")
     image_uploads = form_data.getlist("image")
@@ -350,14 +368,26 @@ async def edits(inrequest: Request):
 
     response_data = None
     try:
-        response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt, tensor_images, request.user, request.style)
-
-    
+        #response_data = image_request(request.prompt, request.size, request.response_format, request.n, request.negprompt, tensor_images, request.user, request.style)
+        response_data = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            image_request,
+            request.prompt,
+            request.size,
+            request.response_format,
+            request.n,
+            request.negprompt,
+            tensor_images,
+            request.user,
+            request.style,
+        )
     except Exception as e:
         # Handle exception...
         logging.error(f"An error occurred: {e}")
         return {"error": str(e)}
 
+    finally:
+        active_requests -= 1
     return response_data
 
 @app.get("/nvidia-smi")
@@ -385,7 +415,8 @@ async def get_nvidia_smi():
 
 @app.get('/ping')
 async def get_status():
-    return {"ping": "pong"}
+    global active_requests
+    return {"active": active_requests}
 
 if __name__ == "__main__":
     import uvicorn
