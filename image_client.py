@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from pydantic import BaseModel
-from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionControlNetPipeline, DDIMScheduler, DPMSolverMultistepScheduler
+from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionControlNetPipeline, StableDiffusionXLControlNetPipeline, DDIMScheduler, DPMSolverMultistepScheduler
 from diffusers.utils import load_image
 import subprocess
 import numpy as np
@@ -98,9 +98,12 @@ if use_ctrlnet:
     # openpose = OpenposeDetector.from_pretrained(controlnet_id, hand_and_face=True)
     openpose = Processor("openpose_full")
 
-scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
-#scheduler = DPMSolverMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler")
-#scheduler.config.algorithm_type = 'sde-dpmsolver++'
+
+scheduler = None
+if 'xl' in repo_str.lower():
+    scheduler = DPMSolverMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler", use_karras_sigmas=True)
+else:
+    scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
 # Load base pipeline
 base_pipeline = DiffusionPipeline.from_pretrained(
@@ -112,7 +115,8 @@ base_pipeline = DiffusionPipeline.from_pretrained(
     safety_checker=None
 ).to("cuda")
 
-tomesd.apply_patch(base_pipeline, ratio=0.5)
+if 'xl' not in repo_str.lower():
+    tomesd.apply_patch(base_pipeline, ratio=0.5)
 helper = DeepCacheSDHelper(pipe=base_pipeline)
 helper.set_params(
         cache_interval=3,
@@ -125,10 +129,16 @@ helper.enable()
 #stable_diffusion_face = base_pipeline
 stable_diffusion_mix = base_pipeline
 
-stable_diffusion_ctrl = StableDiffusionControlNetPipeline.from_pipe(
-    base_pipeline,
-    controlnet=controlnet
-)
+#if 'xl' in repo_str.lower():
+    #stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline.from_pipe(
+    #    base_pipeline,
+    #    controlnet=controlnet
+    #)
+#else:
+#    stable_diffusion_ctrl = StableDiffusionControlNetPipeline.from_pipe(
+#        base_pipeline,
+#        controlnet=controlnet
+#    )
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
@@ -137,11 +147,11 @@ generator = torch.Generator("cpu").manual_seed(seed)
 #stable_diffusion_face.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder_face)
 stable_diffusion_mix.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=[adapter_encoder, adapter_encoder_face])
 
-#stable_diffusion.enable_vae_slicing()
+stable_diffusion_mix.enable_vae_slicing()
 #stable_diffusion.enable_sequential_cpu_offload()
 #stable_diffusion_style.enable_model_cpu_offload()
 #stable_diffusion_face.enable_model_cpu_offload()
-#stable_diffusion_mix.enable_model_cpu_offload()
+stable_diffusion_mix.enable_model_cpu_offload()
 #stable_diffusion_style.to("cuda")
 #stable_diffusion_face.to("cuda")
 #stable_diffusion_mix.to("cuda")
@@ -203,7 +213,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "height": h,
         "width": w,
         "generator": generator,
-        "num_inference_steps": 60,
+        "num_inference_steps": 20,
     }
     print(ipweights)
     print(keys)
