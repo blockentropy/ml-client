@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from pydantic import BaseModel
-from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionControlNetPipeline, StableDiffusionXLControlNetPipeline, DDIMScheduler, DPMSolverMultistepScheduler
+from diffusers import DiffusionPipeline, UniPCMultistepScheduler, ControlNetModel, StableDiffusionControlNetPipeline, StableDiffusionXLControlNetPipeline, DDIMScheduler, DPMSolverMultistepScheduler, AutoencoderKL, DPMSolverSinglestepScheduler
 from diffusers.utils import load_image
 import subprocess
 import numpy as np
@@ -33,7 +33,7 @@ from collections import defaultdict
 
 from DeepCache import DeepCacheSDHelper
 import tomesd
-
+from quanto import quantize, freeze, qfloat8_e4m3fn, qint8, qint4
 
 thread_pool = ThreadPoolExecutor(max_workers=1)  # Adjust the number of workers as needed
 active_requests = 0
@@ -74,6 +74,7 @@ adapter_id = config.get(repo_str, 'iprepo')
 adapter_folder = config.get(repo_str, 'ipfolder')
 adapter_encoder = config.get(repo_str, 'ipencoder')
 adapter_encoder_face = config.get(repo_str, 'ipencoder_face')
+vae_repo = config.get(repo_str, 'vae')
 maxh = config.get(repo_str, 'maxh')
 maxw = config.get(repo_str, 'maxw')
 max_height = int(maxh)
@@ -101,14 +102,18 @@ if use_ctrlnet:
 
 scheduler = None
 if 'xl' in repo_str.lower():
-    scheduler = DPMSolverMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler", use_karras_sigmas=True)
+    #scheduler = DPMSolverMultistepScheduler.from_pretrained(repo_id, subfolder="scheduler", use_karras_sigmas=True)
+    scheduler = DPMSolverSinglestepScheduler.from_pretrained(repo_id, subfolder="scheduler")
+    #scheduler.algorithm_type="sde-dpmsolver++"
 else:
     scheduler = DDIMScheduler.from_pretrained(repo_id, subfolder="scheduler")
 
+vae = AutoencoderKL.from_pretrained(vae_repo, torch_dtype=torch.float16)
 # Load base pipeline
 base_pipeline = DiffusionPipeline.from_pretrained(
     repo_id,
     scheduler=scheduler,
+    vae=vae,
     torch_dtype=torch.float16,
     use_safetensors=True,
     variant="fp16",
@@ -117,12 +122,23 @@ base_pipeline = DiffusionPipeline.from_pretrained(
 
 if 'xl' not in repo_str.lower():
     tomesd.apply_patch(base_pipeline, ratio=0.5)
+#else:
 helper = DeepCacheSDHelper(pipe=base_pipeline)
 helper.set_params(
         cache_interval=3,
         cache_branch_id=0,
         )
 helper.enable()
+
+if 'xl' in repo_str.lower():
+    quantize(base_pipeline.unet, weights=qint8)
+    freeze(base_pipeline.unet)
+
+#quantize(base_pipeline.text_encoder_2, weights=qint8)
+#freeze(base_pipeline.text_encoder_2)
+
+#quantize(base_pipeline.text_encoder, weights=qint8)
+#freeze(base_pipeline.text_encoder)
 
 # Reuse components for different pipelines
 #stable_diffusion_style = base_pipeline
@@ -145,13 +161,12 @@ generator = torch.Generator("cpu").manual_seed(seed)
 
 #stable_diffusion_style.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder)
 #stable_diffusion_face.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder_face)
-stable_diffusion_mix.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=[adapter_encoder, adapter_encoder_face])
-
-stable_diffusion_mix.enable_vae_slicing()
-#stable_diffusion.enable_sequential_cpu_offload()
+stable_diffusion_mix.load_ip_adapter(adapter_id, subfolder=adapter_folder, dtype=torch.float16, weight_name=[adapter_encoder, adapter_encoder_face])
+#stable_diffusion_mix.enable_vae_slicing()
+#stable_diffusion_mix.enable_sequential_cpu_offload()
 #stable_diffusion_style.enable_model_cpu_offload()
 #stable_diffusion_face.enable_model_cpu_offload()
-stable_diffusion_mix.enable_model_cpu_offload()
+#stable_diffusion_mix.enable_model_cpu_offload()
 #stable_diffusion_style.to("cuda")
 #stable_diffusion_face.to("cuda")
 #stable_diffusion_mix.to("cuda")
@@ -213,7 +228,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "height": h,
         "width": w,
         "generator": generator,
-        "num_inference_steps": 20,
+        "num_inference_steps": 35,
     }
     print(ipweights)
     print(keys)
