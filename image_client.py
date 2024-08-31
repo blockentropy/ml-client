@@ -26,14 +26,14 @@ import subprocess
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
-from controlnet_aux import OpenposeDetector
+from controlnet_aux import OpenposeDetector, DWposeDetector
 
 from controlnet_aux.processor import Processor
 from collections import defaultdict
 
 from DeepCache import DeepCacheSDHelper
 import tomesd
-from quanto import quantize, freeze, qfloat8_e4m3fn, qint8, qint4
+from optimum.quanto import quantize, freeze, qfloat8, qint8, qint4
 
 thread_pool = ThreadPoolExecutor(max_workers=1)  # Adjust the number of workers as needed
 active_requests = 0
@@ -90,14 +90,15 @@ path_url = config.get('settings', 'path_url')
 port = args.port if args.port is not None else config.getint('settings', 'port')
 
 if use_ctrlnet:
-    controlnet_id = config.get('control-net', 'repo')
-    sd_controlnet_id = config.get('sd-control-net', 'repo')
+    controlnet_id = config.get(repo_str, 'control-net')
+    sd_controlnet_id = config.get(repo_str, 'sd-control-net')
     # Add ControlNet for openpose
     controlnet = ControlNetModel.from_pretrained(sd_controlnet_id, torch_dtype=torch.float16)
 
-    # Add Openpose
-    # openpose = OpenposeDetector.from_pretrained(controlnet_id, hand_and_face=True)
-    openpose = Processor("openpose_full")
+    # Add DWPose or Openpose
+    openpose = OpenposeDetector.from_pretrained(controlnet_id)
+    #dwpose = DWposeDetector(det_config=det_config, det_ckpt=det_ckpt, pose_config=pose_config, pose_ckpt=pose_ckpt, device=device)
+    #openpose = Processor("openpose_full")
 
 
 scheduler = None
@@ -110,6 +111,7 @@ else:
 
 vae = AutoencoderKL.from_pretrained(vae_repo, torch_dtype=torch.float16)
 # Load base pipeline
+
 base_pipeline = DiffusionPipeline.from_pretrained(
     repo_id,
     scheduler=scheduler,
@@ -117,9 +119,11 @@ base_pipeline = DiffusionPipeline.from_pretrained(
     torch_dtype=torch.float16,
     use_safetensors=True,
     variant="fp16",
-    safety_checker=None
+    safety_checker=None,
 ).to("cuda")
 
+
+#base_pipeline.load_lora_weights("/", weight_name="e.safetensors", adapter_name="l")
 if 'xl' not in repo_str.lower():
     tomesd.apply_patch(base_pipeline, ratio=0.5)
 #else:
@@ -130,34 +134,44 @@ helper.set_params(
         )
 helper.enable()
 
-if 'xl' in repo_str.lower():
-    quantize(base_pipeline.unet, weights=qint8)
-    freeze(base_pipeline.unet)
 
-#quantize(base_pipeline.text_encoder_2, weights=qint8)
-#freeze(base_pipeline.text_encoder_2)
-
-#quantize(base_pipeline.text_encoder, weights=qint8)
-#freeze(base_pipeline.text_encoder)
 
 # Reuse components for different pipelines
 #stable_diffusion_style = base_pipeline
 #stable_diffusion_face = base_pipeline
 stable_diffusion_mix = base_pipeline
 
-#if 'xl' in repo_str.lower():
-    #stable_diffusion_ctrl = StableDiffusionXLControlNetPipeline.from_pipe(
-    #    base_pipeline,
-    #    controlnet=controlnet
-    #)
-#else:
-#    stable_diffusion_ctrl = StableDiffusionControlNetPipeline.from_pipe(
-#        base_pipeline,
-#        controlnet=controlnet
-#    )
+if use_ctrlnet:
+    if 'xl' in repo_str.lower():
+        stable_diffusion_mix = StableDiffusionXLControlNetPipeline.from_pipe(
+            base_pipeline,
+            controlnet=controlnet
+    ).to("cuda")
+    else:
+        stable_diffusion_mix = StableDiffusionControlNetPipeline.from_pipe(
+            base_pipeline,
+            controlnet=controlnet
+    ).to("cuda")
 
 seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
+
+
+if 'xl' in repo_str.lower():
+    quantize(stable_diffusion_mix.unet, weights=qint8)
+    freeze(stable_diffusion_mix.unet)
+
+    #quantize(stable_diffusion_mix.controlnet, weights=qint4)
+    #freeze(stable_diffusion_mix.controlnet)
+    
+    #quantize(stable_diffusion_mix.text_encoder_2, weights=qint4)
+    #freeze(stable_diffusion_mix.text_encoder_2)
+
+    #quantize(stable_diffusion_mix.text_encoder, weights=qint4)
+    #freeze(stable_diffusion_mix.text_encoder)
+
+    #quantize(stable_diffusion_mix.vae, weights=qint8)
+    #freeze(stable_diffusion_mix.vae)
 
 #stable_diffusion_style.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder)
 #stable_diffusion_face.load_ip_adapter(adapter_id, subfolder=adapter_folder, weight_name=adapter_encoder_face)
@@ -214,8 +228,8 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         #ignore
         return None
     
-    keys = ['face', 'style']
-    ipweights = [0.0, 0.0]
+    keys = ['face', 'style', 'pose']
+    ipweights = [0.0, 0.0, 0.0]
     for key, values in weight_dict.items():
         if key in keys:
             index = keys.index(key)
@@ -229,6 +243,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         "width": w,
         "generator": generator,
         "num_inference_steps": 35,
+    #    "cross_attention_kwargs":{'scale': 0.9}
     }
     print(ipweights)
     print(keys)
@@ -238,6 +253,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
     # Split images based on the counts in the user string
     face_images = []
     style_images = []
+    pose_images = []
     current_index = 0
     
     if isinstance(ipimage, list) and len(ipimage) > 0:
@@ -247,6 +263,8 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
                 face_images.extend(ipimage[current_index:current_index+count])
             elif key == 'style':
                 style_images.extend(ipimage[current_index:current_index+count])
+            elif key == 'pose':
+                pose_images.extend(ipimage[current_index:current_index+count])
             current_index += count
     
     # If there are no style images, use imagenone
@@ -254,10 +272,16 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         style_images = [ipimagenone]
     if not face_images:
         face_images = [ipimagenone]
+    if not pose_images:
+        pose_images = [ipimagenone]
     
     args_dict["ip_adapter_image"] = [face_images, style_images]
     
-    stable_diffusion.set_ip_adapter_scale(ipweights)
+    stable_diffusion.set_ip_adapter_scale(ipweights[0:2])
+
+    if use_ctrlnet:
+        args_dict["image"] = pose_images[0]
+        args_dict["controlnet_conditioning_scale"] = ipweights[2] 
     #else:
     #    if "face" in keys:
     #        stable_diffusion = stable_diffusion_face
