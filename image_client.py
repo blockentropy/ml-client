@@ -96,8 +96,8 @@ if use_ctrlnet:
     controlnet = ControlNetModel.from_pretrained(sd_controlnet_id, torch_dtype=torch.float16)
 
     # Add DWPose or Openpose
-    openpose = OpenposeDetector.from_pretrained(controlnet_id)
-    #dwpose = DWposeDetector(det_config=det_config, det_ckpt=det_ckpt, pose_config=pose_config, pose_ckpt=pose_ckpt, device=device)
+    #openpose = OpenposeDetector.from_pretrained(controlnet_id)
+    #openpose = DWposeDetector(det_config=det_config, det_ckpt=det_ckpt, pose_config=pose_config, pose_ckpt=pose_ckpt, device=device)
     #openpose = Processor("openpose_full")
 
 
@@ -157,9 +157,9 @@ seed = 42
 generator = torch.Generator("cpu").manual_seed(seed)
 
 
-if 'xl' in repo_str.lower():
-    quantize(stable_diffusion_mix.unet, weights=qint8)
-    freeze(stable_diffusion_mix.unet)
+#if 'xl' in repo_str.lower():
+#    quantize(stable_diffusion_mix.unet, weights=qint8)
+#    freeze(stable_diffusion_mix.unet)
 
     #quantize(stable_diffusion_mix.controlnet, weights=qint4)
     #freeze(stable_diffusion_mix.controlnet)
@@ -280,7 +280,8 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
     stable_diffusion.set_ip_adapter_scale(ipweights[0:2])
 
     if use_ctrlnet:
-        args_dict["image"] = pose_images[0]
+        poseimg = openpose(pose_images[0])
+        args_dict["image"] = poseimg
         args_dict["controlnet_conditioning_scale"] = ipweights[2] 
     #else:
     #    if "face" in keys:
@@ -318,7 +319,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         if response.status_code == 200:
             print("Generation and upload successful.", filename)
 
-        if key == "cn":
+        if use_ctrlnet:
             response_pose = upload_image(openpose_image, upload_url, filename + "_pose", "ai")
             if response_pose.status_code == 200:
                 print("Generation and upload successful.", filename + "_pose")
@@ -327,7 +328,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
                 "created": int(time.time()),
                 "data": [
                     {
-                        "url_image": path_url+filename+".jpg",
+                        "url": path_url+filename+".jpg",
                         "url_pose": path_url+filename+"_pose"+".jpg",
                     }
                 ]
@@ -348,26 +349,10 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
         image.save(image_buffer, format='JPEG')
         image_buffer.seek(0)
 
-        if key == "cn":
-            image_buffer_pose = io.BytesIO()
-            openpose_image.save(image_buffer_pose, format='JPEG')
-            image_buffer_pose.seek(0)
-
-            response_data = {
-                "created": int(time.time()),
-                "data": [
-                    { 
-                        "b64_json_image": base64.b64encode(image_buffer.read()),
-                        "b64_json_pose": base64.b64encode(image_buffer_pose.read()),
-                    }
-                ]       
-            }
-
-        else:
-            response_data = {
-                "created": int(time.time()),
-                "data": base64.b64encode(image_buffer.read()),
-            }
+        response_data = {
+            "created": int(time.time()),
+            "data": base64.b64encode(image_buffer.read()),
+        }
 
 
     return response_data
