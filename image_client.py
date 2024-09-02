@@ -320,7 +320,7 @@ def image_request(prompt: str, size: str, response_format: str, seed: int = 42, 
             print("Generation and upload successful.", filename)
 
         if use_ctrlnet:
-            response_pose = upload_image(openpose_image, upload_url, filename + "_pose", "ai")
+            response_pose = upload_image(poseimg, upload_url, filename + "_pose", "ai")
             if response_pose.status_code == 200:
                 print("Generation and upload successful.", filename + "_pose")
 
