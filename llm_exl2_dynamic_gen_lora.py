@@ -40,7 +40,7 @@ import uuid
 from blessed import Terminal
 import textwrap
 from outlines.integrations.exllamav2 import RegexFilter, JSONFilter, ChoiceFilter
-from util import format_prompt_llama3, format_prompt, format_prompt_tess, format_prompt_commandr
+from util import format_prompt_llama3, format_prompt, format_prompt_tess, format_prompt_commandr, format_prompt_yi
 from util_merge import ExLlamaV2MergePassthrough
 
 def generate_unique_id():
@@ -694,6 +694,8 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
             prompt = await format_prompt_zephyr(request.messages)
         elif repo_str == 'llama3-70b-instruct' or repo_str == 'llama3-70b-instruct-speculative':
             prompt = await format_prompt_llama3(request.messages, request.tools)
+        elif repo_str == 'qwen2.5-72b-instruct-speculative':
+            prompt = await format_prompt_yi(request.messages, request.tools)
         elif repo_str == 'Starling-LM-7B-alpha':
             prompt = await format_prompt_starling(request.messages)
         elif repo_str == 'Mixtral-8x7B-Instruct-v0.1-GPTQ':

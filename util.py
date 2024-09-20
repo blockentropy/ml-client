@@ -68,7 +68,7 @@ async def format_prompt_llama3(messages, tool_string=None):
 
     return formatted_prompt
 
-async def format_prompt_yi(messages):
+async def format_prompt_yi(messages, tool_string=None):
     formatted_prompt = ""
     system_message_found = False
     
