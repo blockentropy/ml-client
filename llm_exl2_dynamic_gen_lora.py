@@ -191,7 +191,8 @@ class JobStatusDisplay:
         if "accepted_draft_tokens" in r:
             acc = r["accepted_draft_tokens"]
             rej = r["rejected_draft_tokens"]
-            eff = acc / (acc + rej) * 100.0
+            total = total = acc + rej
+            eff = acc / total * 100.0 if total != 0 else 0.0
             text += term.bright_magenta(f"   SD eff.: {eff:6.2f}%")
 
         #print(term.move_xy(0, self.console_line) + text)
@@ -233,7 +234,7 @@ if use_draft_model:
     draft_model_dir = specrepo_id
 
 # Max number of batches to run at once, assuming the sequences will fit within total_context.
-max_batch_size = 4 if paged else 1
+max_batch_size = 8 if paged else 1
 
 # Max chunk size. Determines the size of prefill operations. Can be reduced to reduce pauses whenever a
 # new job is started, but at the expense of overall prompt ingestion speed.
@@ -714,7 +715,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
             prompt += request.partial_generation
         
 
-        timeout = 180  # seconds
+        timeout = 600  # seconds
         start_time = time.time()
         prompt_id = requestid.scope.get("extensions", {}).get("request_id", "Unknown ID")
         #prompt_id = generate_unique_id()
