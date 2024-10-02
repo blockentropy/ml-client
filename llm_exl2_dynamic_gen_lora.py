@@ -322,7 +322,7 @@ generator = ExLlamaV2DynamicGenerator(
     cache = cache,
     draft_model = draft_model,
     draft_cache = draft_cache,
-    num_draft_tokens = 2,
+    num_draft_tokens = 3,
     tokenizer = tokenizer,
     max_batch_size = max_batch_size,
     use_ngram_draft = use_ngram,
@@ -768,7 +768,8 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
 
 @app.get('/ping')
 async def get_status():
-    return {"ping": sum(prompt_length.values())}
+    total_ping = sum(prompt_length.values()) + prompts.qsize()
+    return {"ping": total_ping}
 
 @app.get("/nvidia-smi")
 async def get_nvidia_smi():
