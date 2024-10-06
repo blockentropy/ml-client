@@ -31,6 +31,7 @@ from exllamav2 import(
     ExLlamaV2Cache,
     ExLlamaV2Cache_8bit,
     ExLlamaV2Cache_Q4,
+    ExLlamaV2Cache_Q8,
     ExLlamaV2Tokenizer,
     ExLlamaV2Lora,
 )
@@ -234,7 +235,7 @@ if use_draft_model:
     draft_model_dir = specrepo_id
 
 # Max number of batches to run at once, assuming the sequences will fit within total_context.
-max_batch_size = 8 if paged else 1
+max_batch_size = 6 if paged else 1
 
 # Max chunk size. Determines the size of prefill operations. Can be reduced to reduce pauses whenever a
 # new job is started, but at the expense of overall prompt ingestion speed.
@@ -308,7 +309,7 @@ generators = {}
 gen_stop_token = {}
 generator_name = configini.get(repo_str, 'string')
 
-cache = ExLlamaV2Cache_Q4(
+cache = ExLlamaV2Cache_Q8(
     model,
     max_seq_len = total_context,
     lazy = True
@@ -345,7 +346,7 @@ for key in configini[repo_str]:
             # Initialize a generator for each Lora
             lora_generator = ExLlamaV2DynamicGenerator(
                 model=model,
-                cache=ExLlamaV2Cache_Q4(model, max_seq_len=configini.getint(repo_str, 'total_context', fallback=32768)),
+                cache=ExLlamaV2Cache_Q8(model, max_seq_len=configini.getint(repo_str, 'total_context', fallback=32768)),
                 draft_model = draft_model,
                 draft_cache = draft_cache,
                 tokenizer = tokenizer,
