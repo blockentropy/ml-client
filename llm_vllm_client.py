@@ -122,11 +122,9 @@ if args.use_lora:
     lora_path = config.get(args.lora_repo, 'repo')
 
 
-mm_limit = 3
-
 # max_input_length = 32768
 
-engine_args = AsyncEngineArgs(model=repo_id, max_seq_len_to_capture=max_input_length, tensor_parallel_size=1, device="cuda", revision=revision, trust_remote_code=remote_code, dtype=torch_dtype, enable_lora=args.use_lora, limit_mm_per_prompt={"image": mm_limit})
+engine_args = AsyncEngineArgs(model=repo_id, max_seq_len_to_capture=max_input_length, tensor_parallel_size=1, device="cuda", revision=revision, trust_remote_code=remote_code, dtype=torch_dtype, enable_lora=args.use_lora, limit_mm_per_prompt={"image": args.mm_limit})
 
 # Initialize model with vllm
 if args.use_outlines:
@@ -141,7 +139,7 @@ if args.use_outlines:
         trust_remote_code=remote_code,
         max_seq_len_to_capture=max_input_length,
         enable_lora=args.use_lora,
-        limit_mm_per_prompt={"image": mm_limit}
+        limit_mm_per_prompt={"image": args.mm_limit}
     )
 else:
     model = AsyncLLMEngine.from_engine_args(engine_args)
@@ -431,7 +429,7 @@ async def format_prompt_llama3(messages):
             if isinstance(message.content, list):
                 formatted_prompt += f"<|im_start|>user\n"
                 for item in message.content:
-                    if item["type"] == "image":
+                    if item["type"] == "image_url":
                         formatted_prompt += "<|image|><|eot_id|>"
                     elif item["type"] == "text":
                         text = item["text"]
@@ -468,7 +466,7 @@ async def format_prompt_qwen(messages):
             if isinstance(message.content, list):
                 formatted_prompt += f"<|im_start|>user\n"
                 for item in message.content:
-                    if item["type"] == "image":
+                    if item["type"] == "image_url":
                         formatted_prompt += "<|vision_start|><|image_pad|><|vision_end|>"
                     elif item["type"] == "text":
                         text = item["text"]
@@ -663,8 +661,8 @@ async def mainchat(request: ChatCompletionRequest):
         for message in request.messages:
             if isinstance(message.content, list):
                     for item in message.content:
-                        if item["type"] == "image":
-                            image_urls.append(item["image"])
+                        if item["type"] == "image_url":
+                            image_urls.append(item["image_url"]["url"])
 
 
         # Structured outputs 
