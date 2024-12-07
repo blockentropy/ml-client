@@ -694,7 +694,7 @@ async def mainchat(requestid: Request, request: ChatCompletionRequest):
             prompt = await format_prompt_code(request.messages)
         elif repo_str == 'zephyr-7b-beta':
             prompt = await format_prompt_zephyr(request.messages)
-        elif repo_str == 'llama3-70b-instruct' or repo_str == 'llama3-70b-instruct-speculative' or repo_str == 'llama3-nemotron-instruct':
+        elif repo_str == 'llama3-70b-instruct' or repo_str == 'llama3.3-instruct' or repo_str == 'llama3-nemotron-instruct':
             prompt = await format_prompt_llama3(request.messages, request.tools)
         elif repo_str == 'qwen2.5-72b-instruct-speculative':
             prompt = await format_prompt_yi(request.messages, request.tools)
